@@ -1,0 +1,9 @@
+numpy<2.0.0
+langchain==1.2.6
+langchain-community==0.4.1
+databricks-langchain==0.13.0
+databricks-connect==17.0.10
+slack_bolt>=1.27.0
+databricks-sql-connector>=3.7.0
+openai>=1.59.0
+pydantic>=2.10.0

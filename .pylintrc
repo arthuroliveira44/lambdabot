@@ -1,0 +1,10 @@
+[MESSAGES CONTROL]
+# Disable specific warnings:
+# W1203: logging-fstring-interpolation (We prefer f-strings for readability)
+# W0718: broad-exception-caught (Acceptable in top-level Lambda handlers)
+# C0301: line-too-long (Let Black or Ruff handle formatting, not Pylint)
+disable=W1203,W0718,C0301
+
+[FORMAT]
+# Maximum number of characters on a single line.
+max-line-length=120
