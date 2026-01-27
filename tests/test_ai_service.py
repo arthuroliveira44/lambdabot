@@ -103,3 +103,44 @@ def test_app_mention_erro(mock_process):
 
     last_call_args = mock_say.call_args[0][0]
     assert "Erro crítico" in last_call_args or "Erro Catastrófico" in last_call_args
+
+
+def test_app_mention_async_enfileira_e_nao_responde():
+    """
+    Em modo async, o handler deve apenas enfileirar o job e retornar rápido,
+    deixando o worker responder no Slack.
+    """
+    import main as main_module  # import local to allow patching module vars
+
+    main_module.ASYNC_ENABLED = True
+
+    mock_say = MagicMock()
+    body = {
+        "event_id": "Ev123",
+        "event": {
+            "text": "<@BOT_ID> analyze os dados",
+            "user": "USER_ID",
+            "ts": "12345.6789",
+            "channel": "C123",
+        }
+    }
+
+    with patch("data_slacklake.services.queue_service.enqueue_job", return_value="Msg1") as mock_enqueue, patch(
+        "data_slacklake.services.idempotency_service.try_claim_event", return_value=True
+    ) as mock_claim, patch(
+        "data_slacklake.services.idempotency_service.update_state"
+    ) as mock_update:
+        main_module.handle_app_mentions(body, mock_say)
+
+        mock_claim.assert_called_once_with("Ev123")
+        mock_enqueue.assert_called_once()
+        job = mock_enqueue.call_args[0][0]
+        assert job["event_id"] == "Ev123"
+        assert job["channel"] == "C123"
+        assert job["reply_thread_ts"] == "12345.6789"
+        assert job["text"] == "analyze os dados"
+
+        mock_update.assert_any_call("Ev123", status="ENQUEUED", sqs_message_id="Msg1")
+
+        # Não deve postar nada no Slack diretamente no modo async
+        assert mock_say.call_count == 0
