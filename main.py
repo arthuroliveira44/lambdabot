@@ -1,17 +1,36 @@
 import json
 import base64
+import hashlib
 import logging
+import os
 from slack_bolt import App
 from slack_bolt.adapter.aws_lambda import SlackRequestHandler
 from slack_bolt.request import BoltRequest
 from slack_bolt.response import BoltResponse
-from data_slacklake.config import SLACK_BOT_TOKEN, SLACK_SIGNING_SECRET
+from data_slacklake.config import APP_ENV, SLACK_BOT_TOKEN, SLACK_SIGNING_SECRET
 
 logger = logging.getLogger()
 if logger.handlers:
     for handler in logger.handlers:
         logger.removeHandler(handler)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+
+_NON_PROD_ENVS = {"dev", "test"}
+
+
+def _is_non_prod() -> bool:
+    return (APP_ENV or os.getenv("app_env", "dev")).lower() in _NON_PROD_ENVS
+
+
+def _sha256(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _preview(text: str, max_len: int = 80) -> str:
+    compact = " ".join((text or "").split())
+    if len(compact) <= max_len:
+        return compact
+    return compact[:max_len] + "…"
 
 
 app = App(
@@ -32,6 +51,7 @@ def handle_app_mentions(body, say):
     text = event.get("text", "")
     user = event.get("user", "Desconhecido")
     ts = event.get("ts")
+    thread_ts = event.get("thread_ts") or ts
 
     if ">" in text:
         pergunta = text.split(">", 1)[1].strip()
@@ -39,21 +59,46 @@ def handle_app_mentions(body, say):
         pergunta = text.strip()
 
     if not pergunta:
-        say(f"Olá <@{user}>! Como posso ajudar?")
+        if thread_ts:
+            say(f"Olá <@{user}>! Como posso ajudar?", thread_ts=thread_ts)
+        else:
+            say(f"Olá <@{user}>! Como posso ajudar?")
         return
 
-    logger.info(f"Pergunta de {user}: {pergunta}")
-    say(f"Olá <@{user}>! Processando sua pergunta: *'{pergunta}'*...")
+    if _is_non_prod():
+        logger.info("Pergunta de %s: %s", user, pergunta)
+    else:
+        logger.info(
+            "Pergunta recebida user=%s sha256=%s len=%s preview=%s",
+            user,
+            _sha256(pergunta),
+            len(pergunta),
+            _preview(pergunta, max_len=64),
+        )
+
+    if thread_ts:
+        say(f"Olá <@{user}>! Processando sua pergunta: *'{pergunta}'*...", thread_ts=thread_ts)
+    else:
+        say(f"Olá <@{user}>! Processando sua pergunta: *'{pergunta}'*...")
 
     try:
         from data_slacklake.services.ai_service import process_question
         resposta, sql_debug = process_question(pergunta)
-        say(resposta)
+        if thread_ts:
+            say(resposta, thread_ts=thread_ts)
+        else:
+            say(resposta)
         if sql_debug:
-            say(f"*Debug SQL:* ```{sql_debug}```", thread_ts=ts)
+            if thread_ts:
+                say(f"*Debug SQL:* ```{sql_debug}```", thread_ts=thread_ts)
+            else:
+                say(f"*Debug SQL:* ```{sql_debug}```")
     except Exception as e:
         logger.error(f"Erro: {str(e)}", exc_info=True)
-        say(f"Erro: {str(e)}")
+        if thread_ts:
+            say(f"Erro: {str(e)}", thread_ts=thread_ts)
+        else:
+            say(f"Erro: {str(e)}")
 
 
 def handler(event, context):
@@ -61,7 +106,18 @@ def handler(event, context):
     Entrypoint do AWS Lambda.
     """
 
-    logger.info(f"EVENTO RECEBIDO: {json.dumps(event)}")
+    if _is_non_prod():
+        logger.info("EVENTO RECEBIDO: %s", json.dumps(event))
+    else:
+        aws_request_id = getattr(context, "aws_request_id", None)
+        headers = event.get("headers", {}) or {}
+        logger.info(
+            "Evento recebido aws_request_id=%s isBase64Encoded=%s body_len=%s header_keys=%s",
+            aws_request_id,
+            event.get("isBase64Encoded", False),
+            len(event.get("body", "") or ""),
+            sorted(list(headers.keys()))[:30],
+        )
 
     headers = event.get('headers', {})
 
