@@ -81,7 +81,7 @@ def test_app_mention_fluxo_sucesso(mock_process):
 
     assert mock_say.call_count >= 2
 
-    mock_say.assert_any_call("Resposta Final da IA")
+    mock_say.assert_any_call("Resposta Final da IA", thread_ts="12345.6789")
 
     calls = mock_say.call_args_list
     debug_call = calls[-1]
