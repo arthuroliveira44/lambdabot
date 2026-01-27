@@ -49,9 +49,6 @@ LLM_ENDPOINT = os.getenv("LLM_ENDPOINT", "databricks-gpt-5-2")
 
 # Async processing (optional; used when ASYNC_MODE=true)
 SQS_QUEUE_URL = os.getenv("SQS_QUEUE_URL") or get_ssm_param(SSM_PREFIX, "sqs_queue_url", required=False)
-IDEMPOTENCY_TABLE_NAME = os.getenv("IDEMPOTENCY_TABLE_NAME") or get_ssm_param(
-    SSM_PREFIX, "idempotency_table_name", required=False
-)
 ASYNC_MODE = os.getenv("ASYNC_MODE", "false").strip().lower() == "true"
 ASYNC_ENABLED = bool(ASYNC_MODE and SQS_QUEUE_URL)
 

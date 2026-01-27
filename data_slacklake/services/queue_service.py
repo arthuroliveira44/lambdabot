@@ -19,10 +19,19 @@ def enqueue_job(job: Dict[str, Any]) -> str:
         raise ValueError("SQS_QUEUE_URL não configurado (async não habilitado).")
 
     sqs = boto3.client("sqs", region_name=AWS_REGION)
-    resp = sqs.send_message(
-        QueueUrl=SQS_QUEUE_URL,
-        MessageBody=json.dumps(job, ensure_ascii=False),
-    )
+    params: Dict[str, Any] = {
+        "QueueUrl": SQS_QUEUE_URL,
+        "MessageBody": json.dumps(job, ensure_ascii=False),
+    }
+
+    # Best-effort deduplication/ordering when using FIFO queue:
+    # - MessageGroupId: keep messages ordered per thread
+    # - MessageDeduplicationId: drop duplicates within FIFO dedup window (~5 minutes)
+    if SQS_QUEUE_URL.endswith(".fifo"):
+        params["MessageGroupId"] = str(job.get("reply_thread_ts") or "default")
+        params["MessageDeduplicationId"] = str(job.get("event_id") or params["MessageBody"])
+
+    resp = sqs.send_message(**params)
     message_id = resp.get("MessageId", "")
     logger.info("Job enfileirado no SQS", extra={"message_id": message_id})
     return message_id

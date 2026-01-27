@@ -56,16 +56,10 @@ def handle_app_mentions(body, say):
     if ASYNC_ENABLED:
         try:
             # pylint: disable=import-outside-toplevel
-            from data_slacklake.services.idempotency_service import try_claim_event, update_state
             from data_slacklake.services.queue_service import enqueue_job
 
             if not channel or not reply_thread_ts:
                 raise ValueError("Evento do Slack sem channel/ts suficientes para processamento async.")
-
-            claimed = try_claim_event(event_id)
-            if not claimed:
-                logger.info("Evento duplicado detectado; ignorando", extra={"event_id": event_id})
-                return
 
             job = {
                 "event_id": event_id,
@@ -74,8 +68,7 @@ def handle_app_mentions(body, say):
                 "text": pergunta,
                 "reply_thread_ts": reply_thread_ts,
             }
-            message_id = enqueue_job(job)
-            update_state(event_id, status="ENQUEUED", sqs_message_id=message_id)
+            enqueue_job(job)
             return
         except Exception as e:
             logger.error(
