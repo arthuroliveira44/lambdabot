@@ -57,8 +57,15 @@ def fetch_tables(table_catalog: str, table_schema: str, table_like: str) -> List
     result: List[Dict[str, Any]] = []
     for r in rows:
         # `SHOW TABLES` retorna: database, tableName, isTemporary
+        # Em alguns ambientes, o Databricks cria views temporárias internas (ex.: `_sqldf`).
+        # Elas podem aparecer no SHOW TABLES e não existem no metastore -> ignore.
+        if bool(r.get("isTemporary")):
+            continue
         table_name = r.get("tableName") or r.get("tableName".lower()) or r.get("table_name") or r.get("tablename")
         if not table_name:
+            continue
+        table_name = str(table_name)
+        if table_name.startswith("_"):
             continue
         if not fnmatch.fnmatchcase(str(table_name), glob_pat):
             continue
@@ -66,7 +73,7 @@ def fetch_tables(table_catalog: str, table_schema: str, table_like: str) -> List
             {
                 "table_catalog": table_catalog,
                 "table_schema": table_schema,
-                "table_name": str(table_name),
+                "table_name": table_name,
                 "comment": None,
             }
         )
@@ -90,7 +97,10 @@ def fetch_table_comment(fqn: str) -> Optional[str]:
 
 def fetch_columns_for_table(fqn: str) -> List[Dict[str, Any]]:
     # `DESCRIBE <table>` retorna col_name, data_type, comment (e também linhas de metadados que começam com '#')
-    rows = [r.asDict(recursive=True) for r in spark.sql(f"DESCRIBE {fqn}").collect()]
+    try:
+        rows = [r.asDict(recursive=True) for r in spark.sql(f"DESCRIBE {fqn}").collect()]
+    except Exception:
+        return []
     cols: List[Dict[str, Any]] = []
     ordinal = 1
     for r in rows:
