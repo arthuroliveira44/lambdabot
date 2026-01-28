@@ -5,6 +5,7 @@ Router service designed to classify user intents.
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from data_slacklake.catalog.loader import load_catalog
+from data_slacklake.catalog.live_catalog import build_live_table_context
 from data_slacklake.config import LLM_ENDPOINT, logger
 from data_slacklake.prompts import ROUTER_TEMPLATE
 
@@ -45,8 +46,19 @@ def identify_table(pergunta_usuario):
             return catalogo[tabela_id]
 
         logger.warning(f"Tabela sugerida '{tabela_id}' não existe no catálogo.")
+        # fallback: busca "ao vivo" no datalake (sem gerar catálogo inteiro em runtime)
+        live = build_live_table_context(pergunta=pergunta_usuario, llm=llm, router_prompt_template=ROUTER_TEMPLATE)
+        if live:
+            return live
         return None
 
     except Exception as e:
         logger.error(f"Erro no Router: {e}")
+        # em erro no router principal, ainda podemos tentar fallback ao vivo
+        try:
+            live = build_live_table_context(pergunta=pergunta_usuario, llm=llm, router_prompt_template=ROUTER_TEMPLATE)
+            if live:
+                return live
+        except Exception:
+            pass
         return None
