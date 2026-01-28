@@ -27,6 +27,23 @@ def _clean_table_id(raw: str) -> str:
     return s
 
 
+def _iter_match_terms(catalog_key: str, info: dict):
+    """
+    Yields normalized terms that, if present in the user's question, imply this table.
+    """
+    yield _normalize(catalog_key)
+
+    fqn = info.get("tabela_fqn") or ""
+    if fqn:
+        yield _normalize(fqn)
+
+    router_hints = info.get("router_hints") or {}
+    sinonimos = list(router_hints.get("sinonimos") or [])
+    sinonimos.extend(info.get("sinonimos") or [])
+    for s in sinonimos:
+        yield _normalize(s)
+
+
 def _direct_match(pergunta_usuario: str):
     """
     Deterministic routing without calling the LLM.
@@ -37,29 +54,16 @@ def _direct_match(pergunta_usuario: str):
     if not q:
         return None
 
-    # 1) Exact match by catalog key presence
+    chosen = None
     for key, info in CATALOGO.items():
-        key_norm = _normalize(key)
-        if key_norm and key_norm in q:
-            return info
+        for term in _iter_match_terms(key, info):
+            if term and term in q:
+                chosen = info
+                break
+        if chosen:
+            break
 
-        # 2) Match by fully-qualified table name (if present)
-        fqn = _normalize(info.get("tabela_fqn") or "")
-        if fqn and fqn in q:
-            return info
-
-        # 3) Match by synonyms (support both "router_hints.sinonimos" and "sinonimos")
-        sinonimos = []
-        router_hints = info.get("router_hints") or {}
-        sinonimos.extend(router_hints.get("sinonimos") or [])
-        sinonimos.extend(info.get("sinonimos") or [])
-
-        for s in sinonimos:
-            s_norm = _normalize(s)
-            if s_norm and s_norm in q:
-                return info
-
-    return None
+    return chosen
 
 
 def identify_table(pergunta_usuario):
