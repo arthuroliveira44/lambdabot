@@ -396,25 +396,21 @@ def call_llm_system_ai_sql(model: str, prompt: str, temperature: float) -> str:
     except Exception:
         func_names = set()
 
-    # Possíveis nomes (variam por versão/workspace)
-    candidates: list[str] = []
-    if "ai_query" in func_names or not func_names:
-        # assinatura mais comum: ai_query(model, prompt) OU ai_query(prompt, model)
-        candidates.extend(
-            [
-                f"SELECT system.ai.ai_query('{m}', '{p}') AS content",
-                f"SELECT system.ai.ai_query('{p}', '{m}') AS content",
-                f"SELECT ai_query('{m}', '{p}') AS content",
-                f"SELECT ai_query('{p}', '{m}') AS content",
-            ]
-        )
-    if "query" in func_names:
-        candidates.extend(
-            [
-                f"SELECT system.ai.query('{m}', '{p}') AS content",
-                f"SELECT system.ai.query('{p}', '{m}') AS content",
-            ]
-        )
+    # Possíveis nomes (variam por versão/workspace).
+    # Importante: se falhar o `SHOW FUNCTIONS` por permissão, ainda tentamos as rotinas comuns.
+    candidates: list[str] = [
+        # assinatura mais comum: (model, prompt) OU (prompt, model)
+        f"SELECT system.ai.ai_query('{m}', '{p}') AS content",
+        f"SELECT system.ai.ai_query('{p}', '{m}') AS content",
+        f"SELECT ai_query('{m}', '{p}') AS content",
+        f"SELECT ai_query('{p}', '{m}') AS content",
+
+        # alguns workspaces expõem como `query`
+        f"SELECT system.ai.query('{m}', '{p}') AS content",
+        f"SELECT system.ai.query('{p}', '{m}') AS content",
+        f"SELECT query('{m}', '{p}') AS content",
+        f"SELECT query('{p}', '{m}') AS content",
+    ]
 
     last_err: Exception | None = None
     errors: list[str] = []
