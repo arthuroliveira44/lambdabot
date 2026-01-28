@@ -7,3 +7,4 @@ slack_bolt>=1.27.0
 databricks-sql-connector>=3.7.0
 openai>=1.59.0
 pydantic>=2.10.0
+boto3>=1.42.0

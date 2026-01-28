@@ -12,7 +12,8 @@ Abaixo está o catálogo de tabelas disponíveis:
 Sua missão:
 1. Analise qual tabela tem os dados necessários para responder a pergunta.
 2. Retorne APENAS o ID da tabela (ex: 'vendas_core').
-3. Se nenhuma tabela for adequada, retorne "NONE".
+3. Se o usuário mencionar explicitamente um ID do catálogo (exatamente como está nas opções), retorne esse ID.
+4. Se nenhuma tabela for adequada, retorne "NONE".
 
 Resposta (apenas o ID):
 """

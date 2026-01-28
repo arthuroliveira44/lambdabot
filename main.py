@@ -5,7 +5,7 @@ from slack_bolt import App
 from slack_bolt.adapter.aws_lambda import SlackRequestHandler
 from slack_bolt.request import BoltRequest
 from slack_bolt.response import BoltResponse
-from data_slacklake.config import SLACK_BOT_TOKEN, SLACK_SIGNING_SECRET
+from data_slacklake.config import ASYNC_ENABLED, SLACK_BOT_TOKEN, SLACK_SIGNING_SECRET
 
 logger = logging.getLogger()
 if logger.handlers:
@@ -17,7 +17,8 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(mess
 app = App(
     token=SLACK_BOT_TOKEN,
     signing_secret=SLACK_SIGNING_SECRET,
-    process_before_response=True
+    # If async mode is enabled, prefer returning the Slack ACK ASAP.
+    process_before_response=not ASYNC_ENABLED,
 )
 
 slack_handler = SlackRequestHandler(app)
@@ -32,6 +33,12 @@ def handle_app_mentions(body, say):
     text = event.get("text", "")
     user = event.get("user", "Desconhecido")
     ts = event.get("ts")
+    thread_ts = event.get("thread_ts")
+    reply_thread_ts = thread_ts or ts
+    channel = event.get("channel")
+
+    # Slack top-level event identifier (best for idempotency)
+    event_id = body.get("event_id") or body.get("event_context") or f"{channel}:{ts}"
 
     if ">" in text:
         pergunta = text.split(">", 1)[1].strip()
@@ -39,21 +46,51 @@ def handle_app_mentions(body, say):
         pergunta = text.strip()
 
     if not pergunta:
-        say(f"Olá <@{user}>! Como posso ajudar?")
+        say(f"Olá <@{user}>! Como posso ajudar?", thread_ts=reply_thread_ts)
         return
 
     logger.info(f"Pergunta de {user}: {pergunta}")
-    say(f"Olá <@{user}>! Processando sua pergunta: *'{pergunta}'*...")
+
+    # Async mode: enqueue and return quickly (worker will reply in-thread).
+    # If enqueue fails, fallback to sync to keep functionality.
+    if ASYNC_ENABLED:
+        try:
+            # pylint: disable=import-outside-toplevel
+            from data_slacklake.services.queue_service import enqueue_job
+
+            if not channel or not reply_thread_ts:
+                raise ValueError("Evento do Slack sem channel/ts suficientes para processamento async.")
+
+            job = {
+                "event_id": event_id,
+                "channel": channel,
+                "user": user,
+                "text": pergunta,
+                "reply_thread_ts": reply_thread_ts,
+            }
+            enqueue_job(job)
+            return
+        except Exception as e:
+            logger.error(
+                "Falha ao enfileirar job async; caindo para modo síncrono.",
+                extra={"error": str(e), "event_id": event_id},
+                exc_info=True,
+            )
+
+    say(
+        f"Olá <@{user}>! Processando sua pergunta: *'{pergunta}'*...",
+        thread_ts=reply_thread_ts,
+    )
 
     try:
         from data_slacklake.services.ai_service import process_question
         resposta, sql_debug = process_question(pergunta)
-        say(resposta)
+        say(resposta, thread_ts=reply_thread_ts)
         if sql_debug:
-            say(f"*Debug SQL:* ```{sql_debug}```", thread_ts=ts)
+            say(f"*Debug SQL:* ```{sql_debug}```", thread_ts=reply_thread_ts)
     except Exception as e:
         logger.error(f"Erro: {str(e)}", exc_info=True)
-        say(f"Erro: {str(e)}")
+        say(f"Erro: {str(e)}", thread_ts=reply_thread_ts)
 
 
 def handler(event, context):
