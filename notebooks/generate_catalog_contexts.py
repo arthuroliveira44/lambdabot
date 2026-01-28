@@ -10,6 +10,7 @@
 # COMMAND ----------
 import json
 import re
+import fnmatch
 from typing import Any, Dict, List, Optional
 
 # COMMAND ----------
@@ -32,34 +33,86 @@ OUTPUT_DBFS_PATH = "dbfs:/tmp/generated_catalog.json"
 # COMMAND ----------
 # MAGIC %md
 # MAGIC ### Helpers: leitura do schema via Spark
+# MAGIC
+# MAGIC **Importante:** Em alguns workspaces, `system.information_schema` pode não listar 100% das tabelas visíveis em
+# MAGIC `SHOW TABLES` (por diferenças de metastore/UC/permissões). Para garantir que você gere para todas as tabelas
+# MAGIC do schema, este notebook usa `SHOW TABLES` + `DESCRIBE` para metadados.
 
 # COMMAND ----------
 def sql_escape_literal(value: str) -> str:
     return value.replace("'", "''")
 
 
+def _like_to_glob(like_pattern: str) -> str:
+    # SQL LIKE: % (qualquer), _ (1 char)  -> glob: * e ?
+    return like_pattern.replace("%", "*").replace("_", "?")
+
+
 def fetch_tables(table_catalog: str, table_schema: str, table_like: str) -> List[Dict[str, Any]]:
-    q = f"""
-    SELECT table_catalog, table_schema, table_name, comment
-    FROM system.information_schema.tables
-    WHERE table_catalog = '{sql_escape_literal(table_catalog)}'
-      AND table_schema  = '{sql_escape_literal(table_schema)}'
-      AND table_type    = 'BASE TABLE'
-      AND table_name LIKE '{sql_escape_literal(table_like)}'
-    ORDER BY table_name
-    """.strip()
-    return [r.asDict(recursive=True) for r in spark.sql(q).collect()]
+    schema_fqn = f"{table_catalog}.{table_schema}"
+    rows = [r.asDict(recursive=True) for r in spark.sql(f"SHOW TABLES IN {schema_fqn}").collect()]
+
+    glob_pat = _like_to_glob(table_like)
+    result: List[Dict[str, Any]] = []
+    for r in rows:
+        # `SHOW TABLES` retorna: database, tableName, isTemporary
+        table_name = r.get("tableName") or r.get("tableName".lower()) or r.get("table_name") or r.get("tablename")
+        if not table_name:
+            continue
+        if not fnmatch.fnmatchcase(str(table_name), glob_pat):
+            continue
+        result.append(
+            {
+                "table_catalog": table_catalog,
+                "table_schema": table_schema,
+                "table_name": str(table_name),
+                "comment": None,
+            }
+        )
+
+    result.sort(key=lambda x: x["table_name"])
+    return result
 
 
-def fetch_columns(table_catalog: str, table_schema: str) -> List[Dict[str, Any]]:
-    q = f"""
-    SELECT table_name, column_name, data_type, comment, ordinal_position
-    FROM system.information_schema.columns
-    WHERE table_catalog = '{sql_escape_literal(table_catalog)}'
-      AND table_schema  = '{sql_escape_literal(table_schema)}'
-    ORDER BY table_name, ordinal_position
-    """.strip()
-    return [r.asDict(recursive=True) for r in spark.sql(q).collect()]
+def fetch_table_comment(fqn: str) -> Optional[str]:
+    # `DESCRIBE DETAIL` costuma trazer `description`/`comment` quando existe
+    try:
+        d = spark.sql(f"DESCRIBE DETAIL {fqn}").collect()[0].asDict(recursive=True)
+        for k in ("description", "comment"):
+            v = d.get(k)
+            if v and str(v).strip():
+                return str(v).strip()
+    except Exception:
+        pass
+    return None
+
+
+def fetch_columns_for_table(fqn: str) -> List[Dict[str, Any]]:
+    # `DESCRIBE <table>` retorna col_name, data_type, comment (e também linhas de metadados que começam com '#')
+    rows = [r.asDict(recursive=True) for r in spark.sql(f"DESCRIBE {fqn}").collect()]
+    cols: List[Dict[str, Any]] = []
+    ordinal = 1
+    for r in rows:
+        col_name = r.get("col_name") or r.get("col_name".upper())
+        data_type = r.get("data_type") or r.get("data_type".upper())
+        comment = r.get("comment") or r.get("comment".upper())
+
+        if not col_name:
+            continue
+        col_name = str(col_name).strip()
+        if not col_name or col_name.startswith("#"):
+            continue
+
+        cols.append(
+            {
+                "column_name": col_name,
+                "data_type": (str(data_type).strip() if data_type else None),
+                "comment": (str(comment).strip() if comment else None),
+                "ordinal_position": ordinal,
+            }
+        )
+        ordinal += 1
+    return cols
 
 
 def build_fqn(table_catalog: str, table_schema: str, table_name: str) -> str:
@@ -159,7 +212,9 @@ def call_llm_serving_rest(endpoint: str, prompt: str, temperature: float) -> str
     import requests
 
     ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()
-    host = ctx.apiUrl().get()               # ex: https://adb-xxxx.azuredatabricks.net
+    # `apiUrl()` pode retornar o "control plane" (ex: região) em alguns ambientes.
+    # Para chamar endpoints do workspace, use `browserHostName()`.
+    host = f"https://{ctx.browserHostName().get()}"
     token = ctx.apiToken().get()            # token do usuário/cluster
 
     url = f"{host}/api/2.0/serving-endpoints/{endpoint}/invocations"
@@ -237,17 +292,30 @@ def validate_llm_entry(entry: Dict[str, Any], fqn: str, allowed_columns: List[st
     if not seen:
         raise ValueError("LLM não listou colunas na seção 'Colunas:'.")
 
+
+def list_serving_endpoints() -> List[str]:
+    """
+    Lista endpoints de Model Serving no workspace (para você escolher um `LLM_ENDPOINT` válido).
+    """
+    import requests
+
+    ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()
+    host = f"https://{ctx.browserHostName().get()}"
+    token = ctx.apiToken().get()
+    url = f"{host}/api/2.0/serving-endpoints"
+    headers = {"Authorization": f"Bearer {token}"}
+    r = requests.get(url, headers=headers, timeout=60)
+    r.raise_for_status()
+    data = r.json()
+    eps = [e.get("name") for e in data.get("endpoints", []) if e.get("name")]
+    return sorted(set(eps))
+
 # COMMAND ----------
 # MAGIC %md
 # MAGIC ### Geração do catálogo
 
 # COMMAND ----------
 tables = fetch_tables(TABLE_CATALOG, TABLE_SCHEMA, TABLE_LIKE)
-cols_all = fetch_columns(TABLE_CATALOG, TABLE_SCHEMA)
-
-cols_by_table: Dict[str, List[Dict[str, Any]]] = {}
-for c in cols_all:
-    cols_by_table.setdefault(c["table_name"], []).append(c)
 
 regex_compiled = re.compile(TABLE_REGEX) if TABLE_REGEX else None
 
@@ -260,12 +328,13 @@ for t in tables:
     fqn = build_fqn(t["table_catalog"], t["table_schema"], table_name)
     table_id = f"{ID_PREFIX}{table_name}" if ID_PREFIX else table_name
 
-    columns = cols_by_table.get(table_name, [])
+    table_comment = fetch_table_comment(fqn) or t.get("comment")
+    columns = fetch_columns_for_table(fqn)
     allowed_cols = [c["column_name"] for c in columns]
 
     entry: Dict[str, Any] = {
-        "descricao": build_description(t.get("comment"), fqn),
-        "contexto": build_context_deterministic(fqn, t.get("comment"), columns),
+        "descricao": build_description(table_comment, fqn),
+        "contexto": build_context_deterministic(fqn, table_comment, columns),
         "tags": [],
         "sinonimos": [],
     }
