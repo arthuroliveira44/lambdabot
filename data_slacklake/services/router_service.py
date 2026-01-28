@@ -66,26 +66,18 @@ def _direct_match(pergunta_usuario: str):
     return chosen
 
 
-def identify_table(pergunta_usuario):
-    """Returns the dictionary for the chosen table or None"""
+def _build_catalog_options_text() -> str:
+    """
+    Builds a compact catalog description list for the router prompt.
+    """
+    lines = []
+    for key, info in CATALOGO.items():
+        descricao = info.get("descricao", "")
+        fqn = info.get("tabela_fqn", "")
 
-    # Fast-path: direct routing when the user already named the table/key.
-    direct = _direct_match(pergunta_usuario)
-    if direct:
-        logger.info("Roteamento direto (sem LLM) aplicado.")
-        return direct
-
-    from databricks_langchain import ChatDatabricks
-
-    llm = ChatDatabricks(endpoint=LLM_ENDPOINT, temperature=0)
-
-    lista_texto = ""
-    for k, v in CATALOGO.items():
-        descricao = v.get("descricao", "")
-        fqn = v.get("tabela_fqn", "")
-        router_hints = v.get("router_hints") or {}
-        sinonimos = router_hints.get("sinonimos") or v.get("sinonimos") or []
-        tags = router_hints.get("tags") or v.get("tags") or []
+        router_hints = info.get("router_hints") or {}
+        sinonimos = router_hints.get("sinonimos") or info.get("sinonimos") or []
+        tags = router_hints.get("tags") or info.get("tags") or []
 
         extras = []
         if fqn:
@@ -96,41 +88,70 @@ def identify_table(pergunta_usuario):
             extras.append(f"Tags: {', '.join(tags[:10])}")
 
         extras_txt = f" | {' | '.join(extras)}" if extras else ""
-        lista_texto += f"- ID: {k} | Descrição: {descricao}{extras_txt}\n"
+        lines.append(f"- ID: {key} | Descrição: {descricao}{extras_txt}")
+
+    return "\n".join(lines) + ("\n" if lines else "")
+
+
+def _lookup_catalog_by_id(candidate_id: str):
+    """
+    Resolves a candidate id string into a catalog entry (best-effort).
+    """
+    cleaned = _clean_table_id(candidate_id)
+    cleaned_norm = _normalize(cleaned)
+
+    chosen = None
+
+    if cleaned_norm and cleaned_norm not in ("none", "null"):
+        if cleaned in CATALOGO:
+            chosen = CATALOGO[cleaned]
+        else:
+            for key, info in CATALOGO.items():
+                key_norm = _normalize(key)
+                if key_norm == cleaned_norm:
+                    chosen = info
+                    break
+                if cleaned_norm and (cleaned_norm in key_norm or key_norm in cleaned_norm):
+                    chosen = info
+                    break
+
+    return chosen, cleaned
+
+
+def _identify_with_llm(pergunta_usuario: str):
+    """
+    Uses the LLM router to choose a catalog entry.
+    """
+    from databricks_langchain import ChatDatabricks
+
+    llm = ChatDatabricks(endpoint=LLM_ENDPOINT, temperature=0)
+    options_text = _build_catalog_options_text()
 
     prompt = ChatPromptTemplate.from_template(ROUTER_TEMPLATE)
     chain = prompt | llm | StrOutputParser()
 
     try:
-        tabela_id = chain.invoke({
-            "pergunta": pergunta_usuario,
-            "opcoes": lista_texto
-        }).strip()
+        raw = chain.invoke({"pergunta": pergunta_usuario, "opcoes": options_text}).strip()
+        chosen, cleaned = _lookup_catalog_by_id(raw)
+        logger.info(f"Roteador escolheu: {cleaned}")
 
-        tabela_id = _clean_table_id(tabela_id)
+        if not chosen:
+            logger.warning(f"Tabela sugerida '{cleaned}' não existe no catálogo.")
 
-        logger.info(f"Roteador escolheu: {tabela_id}")
-
-        # Exact match
-        if tabela_id in CATALOGO:
-            return CATALOGO[tabela_id]
-
-        # Case-insensitive / substring fallback
-        tabela_id_norm = _normalize(tabela_id)
-        if tabela_id_norm in ("none", "null", ""):
-            return None
-
-        for key, info in CATALOGO.items():
-            if _normalize(key) == tabela_id_norm:
-                return info
-            if tabela_id_norm and tabela_id_norm in _normalize(key):
-                return info
-            if tabela_id_norm and _normalize(key) in tabela_id_norm:
-                return info
-
-        logger.warning(f"Tabela sugerida '{tabela_id}' não existe no catálogo.")
-        return None
-
+        return chosen
     except Exception as e:
         logger.error(f"Erro no Router: {e}")
         return None
+
+
+def identify_table(pergunta_usuario):
+    """Returns the dictionary for the chosen table or None"""
+
+    # Fast-path: direct routing when the user already named the table/key.
+    chosen = _direct_match(pergunta_usuario)
+    if chosen:
+        logger.info("Roteamento direto (sem LLM) aplicado.")
+    else:
+        chosen = _identify_with_llm(pergunta_usuario)
+
+    return chosen
