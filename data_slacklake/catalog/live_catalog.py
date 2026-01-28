@@ -8,7 +8,7 @@ para poucas tabelas candidatas.
 Controle via env:
 - LIVE_CATALOG_ENABLED=true|false (default: false)
 - LIVE_CATALOG_TARGETS="catalog.schema,catalog.schema" (obrigatório se habilitar)
-- LIVE_CATALOG_MAX_TABLES=50 (default)
+- LIVE_CATALOG_MAX_TABLES=30 (default)
 """
 
 from __future__ import annotations
@@ -49,9 +49,9 @@ def _get_targets() -> list[tuple[str, str]]:
 
 def _max_tables() -> int:
     try:
-        return int(os.getenv("LIVE_CATALOG_MAX_TABLES", "50"))
+        return int(os.getenv("LIVE_CATALOG_MAX_TABLES", "30"))
     except Exception:
-        return 50
+        return 30
 
 
 def _rows_to_dicts(columns: list[str], rows: list[list[Any]] | list[tuple[Any, ...]]) -> list[dict[str, Any]]:
@@ -137,7 +137,9 @@ def _build_router_options(tables: list[dict[str, Any]], limit: int) -> str:
     out_lines: list[str] = []
     for t in tables[:limit]:
         fqn = f"{t.get('table_catalog')}.{t.get('table_schema')}.{t.get('table_name')}"
-        desc = t.get("comment") or ""
+        desc = (t.get("comment") or "").strip()
+        if len(desc) > 220:
+            desc = desc[:219].rstrip() + "…"
         out_lines.append(f"- ID: {fqn} | Descrição: {desc}")
     return "\n".join(out_lines)
 
