@@ -16,6 +16,18 @@ python -m data_slacklake.catalog.generate_contexts \
   --output data_slacklake/catalog/generated_catalog.json
 ```
 
+Para gerar um contexto mais “eficiente” usando LLM (com validação para não inventar colunas/tabelas):
+
+```bash
+python -m data_slacklake.catalog.generate_contexts \
+  --table-catalog dev \
+  --table-schema diamond \
+  --table-like "mart_%" \
+  --use-llm \
+  --llm-endpoint "databricks-gpt-5-2" \
+  --output data_slacklake/catalog/generated_catalog.json
+```
+
 Opções úteis:
 - `--table-regex "^mart_.*_core$"`: filtro adicional com regex.
 - `--id-prefix "diamond_"`: prefixo para os IDs no catálogo.

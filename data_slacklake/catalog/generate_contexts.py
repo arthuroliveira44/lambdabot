@@ -21,12 +21,19 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from dataclasses import dataclass
 from typing import Any, Iterable
 
 from data_slacklake.services.db_service import execute_query
+
+try:
+    from pydantic import BaseModel, Field
+except Exception:  # pragma: no cover
+    BaseModel = object  # type: ignore
+    Field = lambda default=None, **_kwargs: default  # type: ignore
 
 
 @dataclass(frozen=True)
@@ -48,6 +55,20 @@ class ColumnInfo:
     data_type: str | None
     comment: str | None
     ordinal_position: int | None
+
+
+class LlmCatalogEntry(BaseModel):
+    """
+    Saída esperada da LLM.
+
+    Observação: `tags`/`sinonimos` são opcionais para evoluir o roteamento
+    sem quebrar compatibilidade com o uso atual (que só exige `descricao`/`contexto`).
+    """
+
+    descricao: str = Field(..., min_length=1)
+    contexto: str = Field(..., min_length=1)
+    tags: list[str] = Field(default_factory=list)
+    sinonimos: list[str] = Field(default_factory=list)
 
 
 def _rows_to_dicts(columns: list[str], rows: Iterable[Iterable[Any]]) -> list[dict[str, Any]]:
@@ -152,6 +173,114 @@ def build_description(*, table: TableInfo) -> str:
     return f"Tabela `{table.fqn}`."
 
 
+def _default_llm_endpoint() -> str:
+    # Preferimos env var para não depender de config/SSM só para default.
+    return os.getenv("LLM_ENDPOINT", "databricks-gpt-5-2")
+
+
+def _build_llm_prompt(*, table: TableInfo, columns: list[ColumnInfo]) -> str:
+    col_lines: list[str] = []
+    for c in columns:
+        type_part = f" ({c.data_type})" if c.data_type else ""
+        comment_part = f" - {c.comment.strip()}" if c.comment else ""
+        col_lines.append(f"- {c.column_name}{type_part}{comment_part}")
+
+    table_comment = table.comment.strip() if table.comment else ""
+
+    return f"""
+Você é um especialista em modelagem de dados e geração de contexto para SQL (Spark SQL / Databricks).
+
+Você receberá APENAS metadados reais (schema). Não invente colunas e não invente tabelas.
+
+Tabela (FQN): {table.fqn}
+Comentário da tabela: {table_comment}
+
+Colunas reais (nome, tipo, comentário quando existir):
+{chr(10).join(col_lines) if col_lines else "- (sem colunas no information_schema)"}
+
+Tarefa:
+Gere um JSON estrito (apenas JSON, sem markdown, sem texto extra) com o seguinte schema:
+{{
+  "descricao": "string curta (1 linha) para ajudar o roteador a escolher a tabela",
+  "contexto": "texto em PT-BR com: 1) a frase inicial 'Você é um analista de dados. Tabela: `<FQN>`' 2) uma seção 'Colunas:' listando SOMENTE colunas reais 3) uma seção 'Regras:' com orientações práticas (filtros, grão, duplicação, LIMIT quando aplicável)",
+  "tags": ["opcional", "strings curtas"],
+  "sinonimos": ["opcional", "termos de negócio relevantes"]
+}}
+
+Regras obrigatórias:
+- Em `contexto`, cite a tabela exatamente como `{table.fqn}` dentro de crases: `{table.fqn}`.
+- Na seção `Colunas:`, liste apenas colunas que estão na lista fornecida.
+- Não cite nomes de outras tabelas.
+- Responda APENAS com JSON válido.
+""".strip()
+
+
+def _get_llm(*, endpoint: str, temperature: float):
+    # Import lazy para não exigir databricks_langchain quando --use-llm não é usado.
+    # pylint: disable=import-outside-toplevel
+    from databricks_langchain import ChatDatabricks
+
+    return ChatDatabricks(endpoint=endpoint, temperature=temperature)
+
+
+def _llm_generate_entry(
+    *,
+    table: TableInfo,
+    columns: list[ColumnInfo],
+    llm_endpoint: str,
+    llm_temperature: float,
+) -> LlmCatalogEntry:
+    prompt = _build_llm_prompt(table=table, columns=columns)
+    llm = _get_llm(endpoint=llm_endpoint, temperature=llm_temperature)
+    raw = llm.invoke(prompt)
+    text = getattr(raw, "content", raw)
+    if not isinstance(text, str):
+        text = str(text)
+    data = json.loads(text)
+    return LlmCatalogEntry.model_validate(data)
+
+
+def _validate_llm_entry_against_schema(
+    *,
+    entry: LlmCatalogEntry,
+    table: TableInfo,
+    columns: list[ColumnInfo],
+) -> None:
+    expected = f"`{table.fqn}`"
+    if expected not in entry.contexto:
+        raise ValueError(f"LLM contexto não contém a tabela esperada: {expected}")
+
+    # Bloqueio simples: não pode ter outra referência em crases
+    for m in re.finditer(r"`([^`]+)`", entry.contexto):
+        if m.group(1) != table.fqn:
+            raise ValueError(f"LLM citou outra referência em crases: `{m.group(1)}`")
+
+    allowed = {c.column_name for c in columns}
+    if not allowed:
+        return
+
+    in_cols = False
+    seen: set[str] = set()
+    for line in entry.contexto.splitlines():
+        s = line.strip()
+        if s == "Colunas:":
+            in_cols = True
+            continue
+        if s == "Regras:":
+            in_cols = False
+            continue
+        if in_cols and s.startswith("- "):
+            token = s[2:].strip()
+            token = re.split(r"[\s(:]", token, maxsplit=1)[0].strip()
+            if token and token not in allowed:
+                raise ValueError(f"LLM inventou coluna '{token}' (não existe no schema).")
+            if token:
+                seen.add(token)
+
+    if not seen:
+        raise ValueError("LLM não listou colunas na seção 'Colunas:'.")
+
+
 def generate_catalog(
     *,
     table_catalog: str,
@@ -159,7 +288,10 @@ def generate_catalog(
     table_like: str,
     table_regex: str | None,
     id_prefix: str | None,
-) -> dict[str, dict[str, str]]:
+    use_llm: bool,
+    llm_endpoint: str,
+    llm_temperature: float,
+) -> dict[str, dict[str, Any]]:
     tables = fetch_tables(table_catalog=table_catalog, table_schema=table_schema, table_like=table_like)
     cols_all = fetch_columns(table_catalog=table_catalog, table_schema=table_schema)
 
@@ -169,7 +301,7 @@ def generate_catalog(
 
     regex_compiled = re.compile(table_regex) if table_regex else None
 
-    catalog: dict[str, dict[str, str]] = {}
+    catalog: dict[str, dict[str, Any]] = {}
     for t in tables:
         if regex_compiled and not regex_compiled.search(t.table_name):
             continue
@@ -179,10 +311,36 @@ def generate_catalog(
             table_id = f"{id_prefix}{table_id}"
 
         col_list = cols_by_table.get(t.table_name, [])
-        catalog[table_id] = {
+        entry: dict[str, Any] = {
             "descricao": build_description(table=t),
             "contexto": build_context(table=t, columns=col_list),
+            "tags": [],
+            "sinonimos": [],
         }
+
+        if use_llm:
+            try:
+                llm_entry = _llm_generate_entry(
+                    table=t,
+                    columns=col_list,
+                    llm_endpoint=llm_endpoint,
+                    llm_temperature=llm_temperature,
+                )
+                _validate_llm_entry_against_schema(entry=llm_entry, table=t, columns=col_list)
+                entry["descricao"] = llm_entry.descricao.strip()
+                entry["contexto"] = llm_entry.contexto.strip() + "\n"
+                entry["tags"] = llm_entry.tags
+                entry["sinonimos"] = llm_entry.sinonimos
+            except Exception as e:
+                # fallback seguro: mantém contexto determinístico e deixa uma tag
+                entry["tags"] = ["fallback_schema_only"]
+                entry["contexto"] = (
+                    entry["contexto"]
+                    + "\n"
+                    + f"(Aviso: falha ao enriquecer com LLM, usando contexto determinístico. Motivo: {str(e)})\n"
+                )
+
+        catalog[table_id] = entry
 
     return catalog
 
@@ -203,6 +361,22 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         "--id-prefix",
         default=None,
         help="Prefixo opcional para os IDs do catálogo. Ex: diamond_",
+    )
+    parser.add_argument(
+        "--use-llm",
+        action="store_true",
+        help="Enriquece 'descricao/contexto' com LLM (com validação + fallback determinístico).",
+    )
+    parser.add_argument(
+        "--llm-endpoint",
+        default=_default_llm_endpoint(),
+        help="Endpoint do modelo no Databricks (default: env LLM_ENDPOINT).",
+    )
+    parser.add_argument(
+        "--llm-temperature",
+        type=float,
+        default=0.0,
+        help="Temperatura da LLM (default 0.0).",
     )
     parser.add_argument(
         "--output",
@@ -226,6 +400,9 @@ def main(argv: list[str] | None = None) -> int:
         table_like=args.table_like,
         table_regex=args.table_regex,
         id_prefix=args.id_prefix,
+        use_llm=args.use_llm,
+        llm_endpoint=args.llm_endpoint,
+        llm_temperature=args.llm_temperature,
     )
 
     payload = json.dumps(catalog, ensure_ascii=False, indent=2, sort_keys=True)
