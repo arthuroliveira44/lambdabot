@@ -245,12 +245,36 @@ def call_llm_system_ai_sql(model: str, prompt: str, temperature: float) -> str:
     m = sql_escape_literal(model)
     p = sql_escape_literal(prompt)
 
-    # Tentamos variações comuns para compatibilidade
-    candidates = [
-        f"SELECT system.ai.ai_query('{m}', '{p}') AS content",
-        f"SELECT ai_query('{m}', '{p}') AS content",
-    ]
+    # Descobre funções disponíveis em `system.ai` para tentar o nome correto.
+    try:
+        funcs = [r.asDict(recursive=True) for r in spark.sql("SHOW FUNCTIONS IN system.ai").collect()]
+        func_names = {str(f.get("function") or f.get("functionName") or "").strip() for f in funcs}
+        func_names = {n for n in func_names if n}
+    except Exception:
+        func_names = set()
+
+    # Possíveis nomes (variam por versão/workspace)
+    candidates: list[str] = []
+    if "ai_query" in func_names or not func_names:
+        # assinatura mais comum: ai_query(model, prompt) OU ai_query(prompt, model)
+        candidates.extend(
+            [
+                f"SELECT system.ai.ai_query('{m}', '{p}') AS content",
+                f"SELECT system.ai.ai_query('{p}', '{m}') AS content",
+                f"SELECT ai_query('{m}', '{p}') AS content",
+                f"SELECT ai_query('{p}', '{m}') AS content",
+            ]
+        )
+    if "query" in func_names:
+        candidates.extend(
+            [
+                f"SELECT system.ai.query('{m}', '{p}') AS content",
+                f"SELECT system.ai.query('{p}', '{m}') AS content",
+            ]
+        )
+
     last_err: Exception | None = None
+    errors: list[str] = []
     for q in candidates:
         try:
             row = spark.sql(q).collect()[0]
@@ -258,7 +282,18 @@ def call_llm_system_ai_sql(model: str, prompt: str, temperature: float) -> str:
             return content if isinstance(content, str) else str(content)
         except Exception as e:
             last_err = e
-    raise RuntimeError(f"Falha ao invocar via system.ai ai_query. Último erro: {last_err}")
+            errors.append(f"{q} -> {type(e).__name__}: {str(e)[:400]}")
+
+    funcs_hint = ""
+    if func_names:
+        funcs_hint = f"Funções em system.ai: {sorted(list(func_names))[:50]}"
+    raise RuntimeError(
+        "Falha ao invocar LLM via `system.ai`.\n"
+        + (funcs_hint + "\n" if funcs_hint else "")
+        + "Erros (amostra):\n- "
+        + "\n- ".join(errors[:5])
+        + (f"\nÚltimo erro: {last_err}" if last_err else "")
+    )
 
 
 def call_llm_serving_rest(endpoint: str, prompt: str, temperature: float) -> str:
@@ -392,12 +427,8 @@ def test_llm_invocation(endpoint: str) -> None:
     prompt = """
 Retorne APENAS o JSON: {"ok": true}
 """.strip()
-    # tenta primeiro via system.ai (mais comum em workspaces sem invocations liberado)
-    try:
-        _ = call_llm_system_ai_sql(model=endpoint, prompt=prompt, temperature=0.0)
-        return
-    except Exception:
-        _ = call_llm_serving_rest(endpoint=endpoint, prompt=prompt, temperature=0.0)
+    # Por padrão, valida apenas via system.ai para evitar confusão com 404 do Serving.
+    _ = call_llm_system_ai_sql(model=endpoint, prompt=prompt, temperature=0.0)
 
 # COMMAND ----------
 # MAGIC %md
