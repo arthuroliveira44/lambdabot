@@ -27,6 +27,7 @@ ID_PREFIX = None               # ex: "diamond_"
 USE_LLM = False
 LLM_ENDPOINT = "databricks-gpt-5-2"
 LLM_TEMPERATURE = 0.0
+STRICT_LLM_ENDPOINT_CHECK = True  # se True, valida se o endpoint existe no workspace antes de rodar
 
 OUTPUT_DBFS_PATH = "dbfs:/tmp/generated_catalog.json"
 
@@ -145,6 +146,21 @@ def build_context_deterministic(fqn: str, table_comment: Optional[str], columns:
     lines.append("2. Use filtros por período quando aplicável (ex.: datas/partições).")
     lines.append("3. Se não houver agregação explícita, use LIMIT 100.")
     lines.append("4. Ao agregar, confira o grão para evitar duplicação (JOINs podem multiplicar linhas).")
+
+    # Heurísticas leves para deixar o contexto mais “eficiente” mesmo sem LLM
+    col_names = [str(c.get("column_name", "")).lower() for c in columns]
+    time_cols = [n for n in col_names if any(k in n for k in ("date", "day", "week", "month", "year"))]
+    if time_cols:
+        lines.append("5. Identifique a coluna de tempo correta (ex.: date/week/month) e evite misturar granularidades.")
+
+    # Para tabelas com saldo/amount: evitar somar snapshots sem critério
+    if any("balance" in n for n in col_names):
+        lines.append(
+            "6. Colunas de saldo (ex.: balance/current_balance) normalmente são snapshots: "
+            "não some ao longo do tempo sem definir o recorte (ex.: último dia por cliente/moeda)."
+        )
+    if any("amount" in n for n in col_names):
+        lines.append("7. Para valores monetários (amount), defina moeda (`currency`) e período antes de agregar.")
     return "\n".join(lines).strip() + "\n"
 
 
@@ -245,7 +261,11 @@ def llm_generate_entry(prompt: str, endpoint: str, temperature: float) -> Dict[s
     except Exception:
         text = call_llm_serving_rest(endpoint=endpoint, prompt=prompt, temperature=temperature)
 
-    entry = json.loads(text)
+    # Alguns endpoints retornam envelope; tentamos extrair texto, se necessário
+    try:
+        entry = json.loads(text)
+    except Exception:
+        raise ValueError(f"LLM não retornou JSON puro. Retorno: {text[:3000]}")
     if not isinstance(entry, dict):
         raise ValueError("LLM retornou algo que não é um JSON objeto.")
     return entry
@@ -319,6 +339,21 @@ tables = fetch_tables(TABLE_CATALOG, TABLE_SCHEMA, TABLE_LIKE)
 
 regex_compiled = re.compile(TABLE_REGEX) if TABLE_REGEX else None
 
+if USE_LLM and STRICT_LLM_ENDPOINT_CHECK:
+    try:
+        available = list_serving_endpoints()
+        if LLM_ENDPOINT not in available:
+            raise ValueError(
+                "LLM_ENDPOINT não encontrado em Model Serving. "
+                f"Defina LLM_ENDPOINT para um destes: {available}"
+            )
+    except Exception as e:
+        raise RuntimeError(
+            "Não foi possível validar `LLM_ENDPOINT` via API de serving. "
+            "Se você não usa Model Serving, defina `USE_LLM=False` ou ajuste o endpoint. "
+            f"Erro: {str(e)}"
+        )
+
 catalog: Dict[str, Dict[str, Any]] = {}
 for t in tables:
     table_name = t["table_name"]
@@ -337,6 +372,8 @@ for t in tables:
         "contexto": build_context_deterministic(fqn, table_comment, columns),
         "tags": [],
         "sinonimos": [],
+        "llm_status": "disabled" if not USE_LLM else "pending",
+        "llm_error": None,
     }
 
     if USE_LLM:
@@ -348,9 +385,11 @@ for t in tables:
             entry["contexto"] = str(llm_entry["contexto"]).strip() + "\n"
             entry["tags"] = llm_entry.get("tags", []) or []
             entry["sinonimos"] = llm_entry.get("sinonimos", []) or []
+            entry["llm_status"] = "ok"
         except Exception as e:
             entry["tags"] = ["fallback_schema_only"]
-            entry["contexto"] = entry["contexto"] + "\n" + f"(Aviso: fallback sem LLM. Motivo: {str(e)})\n"
+            entry["llm_status"] = "fallback"
+            entry["llm_error"] = str(e)
 
     catalog[table_id] = entry
 
