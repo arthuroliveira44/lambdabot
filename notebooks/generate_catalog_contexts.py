@@ -253,6 +253,20 @@ def call_llm_serving_rest(endpoint: str, prompt: str, temperature: float) -> str
     }
 
     r = requests.post(url, headers=headers, data=json.dumps(payload), timeout=120)
+    if r.status_code == 404:
+        # Se o endpoint aparece na listagem mas 404 no invocations, é tipicamente permissão (Can Query)
+        try:
+            eps = list_serving_endpoints()
+            if endpoint in eps:
+                raise PermissionError(
+                    "Endpoint existe no workspace, mas a invocação retornou 404. "
+                    "Isso geralmente indica falta de permissão para consultar o endpoint (Can Query) "
+                    "ou política de ocultação de recurso. "
+                    f"Endpoint: {endpoint}"
+                )
+        except Exception:
+            # Se falhar ao listar, segue com erro original
+            pass
     r.raise_for_status()
     data = r.json()
 
@@ -340,6 +354,16 @@ def list_serving_endpoints() -> List[str]:
     eps = [e.get("name") for e in data.get("endpoints", []) if e.get("name")]
     return sorted(set(eps))
 
+
+def test_llm_invocation(endpoint: str) -> None:
+    """
+    Teste rápido (falha cedo) para confirmar se você consegue invocar o endpoint.
+    """
+    prompt = """
+Retorne APENAS o JSON: {"ok": true}
+""".strip()
+    _ = call_llm_serving_rest(endpoint=endpoint, prompt=prompt, temperature=0.0)
+
 # COMMAND ----------
 # MAGIC %md
 # MAGIC ### Geração do catálogo
@@ -357,6 +381,8 @@ if USE_LLM and STRICT_LLM_ENDPOINT_CHECK:
                 "LLM_ENDPOINT não encontrado em Model Serving. "
                 f"Defina LLM_ENDPOINT para um destes: {available}"
             )
+        # garante que você consegue invocar (permite falhar cedo com mensagem clara)
+        test_llm_invocation(LLM_ENDPOINT)
     except Exception as e:
         raise RuntimeError(
             "Não foi possível validar `LLM_ENDPOINT` via API de serving. "
