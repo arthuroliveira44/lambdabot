@@ -2,3 +2,4 @@
 data
 .tool-versions
 __pycache__/
+data_slacklake/catalog/generated_*.json
