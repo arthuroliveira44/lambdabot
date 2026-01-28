@@ -32,3 +32,9 @@ Opções úteis:
 - `--table-regex "^mart_.*_core$"`: filtro adicional com regex.
 - `--id-prefix "diamond_"`: prefixo para os IDs no catálogo.
 - `--stdout`: imprime o JSON no terminal.
+
+## Rodar no Databricks Notebook
+
+Se você prefere rodar dentro do Databricks (usando `spark.sql`), use o notebook em `notebooks/generate_catalog_contexts.py`
+(formato “Databricks notebook source”). Basta importar para um Databricks Repo/Workspace e executar as células,
+ajustando `TABLE_CATALOG`, `TABLE_SCHEMA`, `TABLE_LIKE` e `OUTPUT_DBFS_PATH`.
