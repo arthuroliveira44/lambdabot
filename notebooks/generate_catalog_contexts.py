@@ -4,7 +4,8 @@
 # MAGIC
 # MAGIC Este notebook:
 # MAGIC - Lê metadados reais do Databricks via `system.information_schema.tables/columns`
-# MAGIC - Gera um JSON no formato do `CATALOGO` (id -> `{descricao, contexto, tags, sinonimos}`)
+# MAGIC - Gera um JSON no formato do `CATALOGO` estendido:
+# MAGIC   id -> `{descricao, contexto, tags, sinonimos, grao, colunas_importantes, metricas}`
 # MAGIC - Opcionalmente enriquece com **LLM** (com validações para não inventar colunas/tabelas) e fallback determinístico
 
 # COMMAND ----------
@@ -151,26 +152,163 @@ def build_context_deterministic(fqn: str, table_comment: Optional[str], columns:
             lines.append(f"- {cn}{type_part}{comment_part}.")
 
     lines.append("")
+    # Regras genéricas (mantidas aqui para compatibilidade). Quando usamos o catálogo estendido,
+    # o contexto final é renderizado por `render_context(...)`.
     lines.append("Regras:")
     lines.append("1. Prefira selecionar apenas as colunas necessárias (evite SELECT *).")
     lines.append("2. Use filtros por período quando aplicável (ex.: datas/partições).")
     lines.append("3. Se não houver agregação explícita, use LIMIT 100.")
     lines.append("4. Ao agregar, confira o grão para evitar duplicação (JOINs podem multiplicar linhas).")
+    return "\n".join(lines).strip() + "\n"
 
-    # Heurísticas leves para deixar o contexto mais “eficiente” mesmo sem LLM
-    col_names = [str(c.get("column_name", "")).lower() for c in columns]
-    time_cols = [n for n in col_names if any(k in n for k in ("date", "day", "week", "month", "year"))]
-    if time_cols:
-        lines.append("5. Identifique a coluna de tempo correta (ex.: date/week/month) e evite misturar granularidades.")
 
-    # Para tabelas com saldo/amount: evitar somar snapshots sem critério
-    if any("balance" in n for n in col_names):
-        lines.append(
-            "6. Colunas de saldo (ex.: balance/current_balance) normalmente são snapshots: "
-            "não some ao longo do tempo sem definir o recorte (ex.: último dia por cliente/moeda)."
-        )
-    if any("amount" in n for n in col_names):
-        lines.append("7. Para valores monetários (amount), defina moeda (`currency`) e período antes de agregar.")
+def infer_grao(fqn: str, columns: List[Dict[str, Any]]) -> str:
+    names = [str(c.get("column_name", "")).lower() for c in columns]
+    has_customer = any(n in names for n in ("id_customer", "customer_id"))
+    has_currency = "currency" in names
+    # escolhe uma coluna de tempo mais “canônica”
+    time_candidates = [n for n in names if n.endswith("_date") or n in ("date", "dt", "day", "week", "month")]
+    time_col = time_candidates[0] if time_candidates else None
+
+    parts = []
+    if has_customer:
+        parts.append("cliente")
+    if has_currency:
+        parts.append("moeda")
+    if time_col:
+        parts.append(f"tempo ({time_col})")
+
+    if parts:
+        return "Provável grão por " + ", ".join(parts) + ". Confirme antes de agregar."
+    return "Grão não inferido a partir do schema. Confirme as chaves/dimensões antes de agregar."
+
+
+def infer_colunas_importantes(columns: List[Dict[str, Any]]) -> List[str]:
+    names = [str(c.get("column_name", "")).lower() for c in columns]
+    scored: List[tuple[int, str]] = []
+    for n in names:
+        score = 0
+        if n in ("id", "id_customer", "customer_id", "cpf", "cnpj"):
+            score += 100
+        if any(k in n for k in ("date", "day", "week", "month", "year", "created_at", "updated_at", "timestamp")):
+            score += 80
+        if any(k in n for k in ("status", "type", "segment", "bu", "business", "country", "currency")):
+            score += 50
+        if any(k in n for k in ("value", "amount", "balance", "revenue", "gmv", "count", "total", "pct", "ratio")):
+            score += 70
+        if score > 0:
+            scored.append((score, n))
+    scored.sort(reverse=True)
+    # devolve até 12 colunas importantes (sem duplicar)
+    out: List[str] = []
+    for _s, n in scored:
+        if n not in out:
+            out.append(n)
+        if len(out) >= 12:
+            break
+    return out
+
+
+def infer_metricas(columns: List[Dict[str, Any]]) -> Dict[str, str]:
+    metricas: Dict[str, str] = {}
+    for c in columns:
+        name = str(c.get("column_name", ""))
+        n = name.lower()
+        dt = str(c.get("data_type") or "").lower()
+        is_numeric = any(x in dt for x in ("int", "bigint", "double", "float", "decimal", "long", "smallint", "tinyint"))
+        if not is_numeric:
+            continue
+        if any(k in n for k in ("pct", "ratio", "rate", "share", "zscore")):
+            metricas[name] = "Métrica de razão/percentual: geralmente usar AVG/mediana (não somar)."
+        elif any(k in n for k in ("balance", "current_balance")):
+            metricas[name] = "Snapshot de saldo: use último valor no período por chave (não somar)."
+        elif any(k in n for k in ("count", "qtd", "qty", "total")):
+            metricas[name] = "Métrica contagem/total: normalmente aditiva (SUM), valide duplicação pelo grão."
+        elif any(k in n for k in ("amount", "value", "revenue", "gmv")):
+            metricas[name] = "Métrica monetária/valor: normalmente aditiva (SUM), valide moeda e duplicação pelo grão."
+        else:
+            metricas[name] = "Métrica numérica: escolha agregação apropriada (SUM/AVG/MAX) conforme o significado."
+    # limita para evitar catálogo gigantesco
+    if len(metricas) > 25:
+        metricas = dict(list(metricas.items())[:25])
+    return metricas
+
+
+def infer_regras(columns: List[Dict[str, Any]]) -> List[str]:
+    names = [str(c.get("column_name", "")).lower() for c in columns]
+    regras = [
+        "Prefira selecionar apenas as colunas necessárias (evite SELECT *).",
+        "Use filtros por período quando aplicável (ex.: datas/partições).",
+        "Se não houver agregação explícita, use LIMIT 100.",
+        "Ao agregar, confira o grão para evitar duplicação (JOINs podem multiplicar linhas).",
+    ]
+    if any("currency" == n for n in names):
+        regras.append("Para valores monetários, defina `currency` antes de agregar/Comparar.")
+    if any("balance" in n for n in names):
+        regras.append("Colunas de saldo (balance) costumam ser snapshots: não some ao longo do tempo sem recorte (último dia por chave).")
+    return regras
+
+
+def render_context(
+    *,
+    fqn: str,
+    table_comment: Optional[str],
+    grao: str,
+    columns: List[Dict[str, Any]],
+    colunas_importantes: List[str],
+    metricas: Dict[str, str],
+    regras: List[str],
+) -> str:
+    # índice rápido de colunas
+    by_name = {str(c.get("column_name")): c for c in columns if c.get("column_name")}
+    # manter ordem original para colunas completas
+    ordered_names = [str(c.get("column_name")) for c in columns if c.get("column_name")]
+
+    lines: List[str] = []
+    lines.append(f"Você é um analista de dados. Tabela: `{fqn}`")
+    lines.append("")
+    if table_comment:
+        lines.append(f"Descrição da tabela: {str(table_comment).strip()}")
+        lines.append("")
+
+    lines.append(f"Grão: {grao}")
+    lines.append("")
+
+    if colunas_importantes:
+        lines.append("Colunas importantes:")
+        for n in colunas_importantes:
+            # `colunas_importantes` pode vir em lower; tenta casar com original
+            original = next((x for x in ordered_names if x.lower() == n.lower()), n)
+            c = by_name.get(original) or {}
+            dt = c.get("data_type")
+            cm = c.get("comment")
+            type_part = f" ({dt})" if dt else ""
+            comment_part = f": {str(cm).strip()}" if cm else ""
+            lines.append(f"- {original}{type_part}{comment_part}.")
+        lines.append("")
+
+    lines.append("Colunas:")
+    if not ordered_names:
+        lines.append("- (sem colunas encontradas)")
+    else:
+        for name in ordered_names:
+            c = by_name.get(name) or {}
+            dt = c.get("data_type")
+            cm = c.get("comment")
+            type_part = f" ({dt})" if dt else ""
+            comment_part = f": {str(cm).strip()}" if cm else ""
+            lines.append(f"- {name}{type_part}{comment_part}.")
+    lines.append("")
+
+    if metricas:
+        lines.append("Métricas (orientação de agregação):")
+        for k, v in metricas.items():
+            lines.append(f"- {k}: {v}")
+        lines.append("")
+
+    lines.append("Regras:")
+    for i, r in enumerate(regras, start=1):
+        lines.append(f"{i}. {r}")
     return "\n".join(lines).strip() + "\n"
 
 
@@ -214,14 +352,19 @@ Tarefa:
 Gere um JSON estrito (apenas JSON, sem markdown, sem texto extra) com o seguinte schema:
 {{
   "descricao": "string curta (1 linha) para ajudar o roteador a escolher a tabela",
-  "contexto": "texto em PT-BR com: 1) a frase inicial 'Você é um analista de dados. Tabela: `<FQN>`' 2) uma seção 'Colunas:' listando SOMENTE colunas reais 3) uma seção 'Regras:' com orientações práticas",
+  "grao": "string curta descrevendo o grão (ex.: 1 linha por cliente por dia por moeda) ou 'desconhecido'",
+  "colunas_importantes": ["lista curta (até 12) de colunas mais importantes (nome exatamente como no schema)"],
+  "metricas": {"<coluna_numerica>": "orientação de agregação (SUM/AVG/MAX/snapshot etc.)"},
+  "regras": ["lista de regras objetivas (strings curtas), focadas em evitar erros de agregação/duplicação"],
   "tags": ["opcional", "strings curtas"],
   "sinonimos": ["opcional", "termos de negócio relevantes"]
 }}
 
 Regras obrigatórias:
-- Em `contexto`, cite a tabela exatamente como `{fqn}` dentro de crases: `{fqn}`.
-- Na seção `Colunas:`, liste apenas colunas que estão na lista fornecida.
+- Não invente colunas: toda coluna citada deve existir na lista fornecida.
+- Não cite outras tabelas.
+- `colunas_importantes` deve conter apenas nomes de colunas reais.
+- `metricas` deve usar apenas colunas numéricas reais (quando possível).
 - Não cite nomes de outras tabelas.
 - Responda APENAS com JSON válido.
 """.strip()
@@ -469,29 +612,66 @@ for t in tables:
     columns = fetch_columns_for_table(fqn)
     allowed_cols = [c["column_name"] for c in columns]
 
+    # base determinística (estendida)
+    grao = infer_grao(fqn, columns)
+    colunas_importantes = infer_colunas_importantes(columns)
+    metricas = infer_metricas(columns)
+    regras = infer_regras(columns)
+
     entry: Dict[str, Any] = {
         "descricao": build_description(table_comment, fqn),
-        "contexto": build_context_deterministic(fqn, table_comment, columns),
+        "grao": grao,
+        "colunas_importantes": colunas_importantes,
+        "metricas": metricas,
         "tags": [],
         "sinonimos": [],
-        "llm_status": "disabled" if not USE_LLM else "pending",
-        "llm_error": None,
+        "contexto": render_context(
+            fqn=fqn,
+            table_comment=table_comment,
+            grao=grao,
+            columns=columns,
+            colunas_importantes=colunas_importantes,
+            metricas=metricas,
+            regras=regras,
+        ),
     }
 
     if USE_LLM:
         try:
-            prompt = build_llm_prompt(fqn, t.get("comment"), columns)
+            prompt = build_llm_prompt(fqn, table_comment, columns)
             llm_entry = llm_generate_entry(prompt, endpoint=LLM_ENDPOINT, temperature=LLM_TEMPERATURE)
-            validate_llm_entry(llm_entry, fqn=fqn, allowed_columns=allowed_cols)
+            # validações de schema (colunas)
+            # - colunas_importantes e metricas
+            if "colunas_importantes" in llm_entry:
+                for col in llm_entry["colunas_importantes"]:
+                    if str(col) not in allowed_cols:
+                        raise ValueError(f"LLM inventou coluna_importante '{col}'.")
+            if "metricas" in llm_entry and isinstance(llm_entry["metricas"], dict):
+                for k in llm_entry["metricas"].keys():
+                    if str(k) not in allowed_cols:
+                        raise ValueError(f"LLM inventou métrica '{k}'.")
+
             entry["descricao"] = str(llm_entry["descricao"]).strip()
-            entry["contexto"] = str(llm_entry["contexto"]).strip() + "\n"
             entry["tags"] = llm_entry.get("tags", []) or []
             entry["sinonimos"] = llm_entry.get("sinonimos", []) or []
-            entry["llm_status"] = "ok"
+            entry["grao"] = str(llm_entry.get("grao", entry["grao"])).strip()
+            entry["colunas_importantes"] = llm_entry.get("colunas_importantes", entry["colunas_importantes"]) or []
+            entry["metricas"] = llm_entry.get("metricas", entry["metricas"]) or {}
+            regras_llm = llm_entry.get("regras")
+            if isinstance(regras_llm, list) and regras_llm:
+                regras = [str(r).strip() for r in regras_llm if str(r).strip()]
+            entry["contexto"] = render_context(
+                fqn=fqn,
+                table_comment=table_comment,
+                grao=entry["grao"],
+                columns=columns,
+                colunas_importantes=entry["colunas_importantes"],
+                metricas=entry["metricas"],
+                regras=regras,
+            )
         except Exception as e:
             entry["tags"] = ["fallback_schema_only"]
-            entry["llm_status"] = "fallback"
-            entry["llm_error"] = str(e)
+            # fallback: mantém os campos determinísticos (sem llm_error/llm_status no output)
 
     catalog[table_id] = entry
 
