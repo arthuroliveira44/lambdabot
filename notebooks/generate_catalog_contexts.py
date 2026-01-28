@@ -234,6 +234,33 @@ def call_llm_langchain(endpoint: str, prompt: str, temperature: float) -> str:
     return getattr(resp, "content", resp) if not isinstance(resp, str) else resp
 
 
+def call_llm_system_ai_sql(model: str, prompt: str, temperature: float) -> str:
+    """
+    Usa Foundation Models via `system.ai` (SQL), que é o caminho correto quando você tem EXECUTE no `system.ai`
+    mas não consegue chamar `/serving-endpoints/.../invocations`.
+
+    Observação: nem todos os workspaces suportam parâmetros (ex.: temperature) via SQL; por isso ignoramos
+    temperature aqui e usamos prompt determinístico (temperature 0 no comportamento desejado).
+    """
+    m = sql_escape_literal(model)
+    p = sql_escape_literal(prompt)
+
+    # Tentamos variações comuns para compatibilidade
+    candidates = [
+        f"SELECT system.ai.ai_query('{m}', '{p}') AS content",
+        f"SELECT ai_query('{m}', '{p}') AS content",
+    ]
+    last_err: Exception | None = None
+    for q in candidates:
+        try:
+            row = spark.sql(q).collect()[0]
+            content = row["content"]
+            return content if isinstance(content, str) else str(content)
+        except Exception as e:
+            last_err = e
+    raise RuntimeError(f"Falha ao invocar via system.ai ai_query. Último erro: {last_err}")
+
+
 def call_llm_serving_rest(endpoint: str, prompt: str, temperature: float) -> str:
     import requests
 
@@ -279,11 +306,14 @@ def call_llm_serving_rest(endpoint: str, prompt: str, temperature: float) -> str
 
 
 def llm_generate_entry(prompt: str, endpoint: str, temperature: float) -> Dict[str, Any]:
-    # tenta via langchain; se não tiver instalado, cai pro REST
+    # tenta via langchain; se não tiver instalado/configurado, tenta system.ai; por fim tenta REST do Serving
     try:
         text = call_llm_langchain(endpoint=endpoint, prompt=prompt, temperature=temperature)
     except Exception:
-        text = call_llm_serving_rest(endpoint=endpoint, prompt=prompt, temperature=temperature)
+        try:
+            text = call_llm_system_ai_sql(model=endpoint, prompt=prompt, temperature=temperature)
+        except Exception:
+            text = call_llm_serving_rest(endpoint=endpoint, prompt=prompt, temperature=temperature)
 
     # Alguns endpoints retornam envelope; tentamos extrair texto, se necessário
     try:
@@ -362,7 +392,12 @@ def test_llm_invocation(endpoint: str) -> None:
     prompt = """
 Retorne APENAS o JSON: {"ok": true}
 """.strip()
-    _ = call_llm_serving_rest(endpoint=endpoint, prompt=prompt, temperature=0.0)
+    # tenta primeiro via system.ai (mais comum em workspaces sem invocations liberado)
+    try:
+        _ = call_llm_system_ai_sql(model=endpoint, prompt=prompt, temperature=0.0)
+        return
+    except Exception:
+        _ = call_llm_serving_rest(endpoint=endpoint, prompt=prompt, temperature=0.0)
 
 # COMMAND ----------
 # MAGIC %md
