@@ -6,7 +6,7 @@ ROUTER_TEMPLATE = """
 Você é um especialista em arquitetura de dados.
 O usuário fez a seguinte pergunta: "{pergunta}"
 
-Abaixo está o catálogo de tabelas disponíveis:
+Abaixo está a lista de opções disponíveis (Top-K do catálogo):
 {opcoes}
 
 Sua missão:
@@ -35,8 +35,9 @@ O usuário perguntou: "{pergunta}"
 
 O banco de dados retornou:
 Colunas: {colunas}
-Dados: {dados}
+Dados (amostra limitada e possivelmente truncada): {dados}
 
 Responda a pergunta do usuário de forma natural, profissional e direta baseada APENAS nesses dados.
 Se os dados estiverem vazios, diga que não encontrou registros.
+Se perceber que os dados parecem ser apenas uma amostra limitada, deixe isso claro e sugira qual agregação/filtro seria melhor para uma resposta definitiva.
 """

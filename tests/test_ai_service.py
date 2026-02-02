@@ -30,9 +30,9 @@ def test_fluxo_completo_sucesso(mock_identify, mock_db, _mock_chat_cls):
         resposta, sql = process_question("Qual o total?")
 
         assert resposta == "O total é 10."
-        assert sql == "SELECT * FROM vendas"
+        assert sql == "SELECT * FROM vendas\nLIMIT 100"
 
-        mock_db.assert_called_once_with("SELECT * FROM vendas")
+        mock_db.assert_called_once_with("SELECT * FROM vendas\nLIMIT 100")
 
 
 @patch("data_slacklake.services.ai_service.execute_query")
@@ -56,7 +56,7 @@ def test_erro_banco_dados(_mock_get_llm, mock_identify, mock_db):
 
         assert "Erro ao executar a query" in resposta
         assert "Conexão recusada" in resposta
-        assert sql == "SELECT * FROM vendas"
+        assert sql == "SELECT * FROM vendas\nLIMIT 100"
 
 
 @patch("data_slacklake.services.ai_service.process_question")
