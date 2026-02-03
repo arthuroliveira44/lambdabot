@@ -2,12 +2,68 @@
 Router service designed to classify user intents.
 """
 # pylint: disable=import-outside-toplevel
+from __future__ import annotations
+
+import re
+
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from data_slacklake.catalog.definitions import CATALOGO
 from data_slacklake.config import LLM_ENDPOINT, logger
 from data_slacklake.prompts import ROUTER_TEMPLATE
-from data_slacklake.services.vector_search_service import retrieve_top_k_catalog
+
+
+_WORD_RE = re.compile(r"[a-zA-ZÀ-ÿ0-9_]+", re.UNICODE)
+_STOPWORDS_PT = {
+    "a", "o", "os", "as", "um", "uma", "uns", "umas",
+    "de", "da", "do", "das", "dos", "em", "no", "na", "nos", "nas",
+    "e", "ou", "com", "para", "por", "sobre", "entre",
+    "qual", "quais", "quanto", "quantos", "quando", "onde", "como", "porque",
+    "me", "minha", "meu", "seu", "sua", "suas", "seus",
+    "isso", "essa", "esse", "essas", "esses", "isto", "aquele", "aquela",
+    "hoje", "ontem", "amanha", "mês", "mes", "semana", "dia", "ano",
+}
+
+
+def _tokenize(text: str) -> set[str]:
+    words = [w.lower() for w in _WORD_RE.findall(text or "")]
+    return {w for w in words if len(w) >= 3 and w not in _STOPWORDS_PT}
+
+
+def _truncate(text: str, max_chars: int) -> str:
+    t = (text or "").strip()
+    if len(t) <= max_chars:
+        return t
+    return t[: max_chars - 1] + "…"
+
+
+def _score_entry(pergunta_tokens: set[str], entry: dict) -> int:
+    """
+    Heurística simples de matching para reduzir opções (evita explodir tokens).
+    """
+    tags = entry.get("tags") or []
+    desc = entry.get("descricao_curta") or entry.get("descricao") or ""
+    entry_tokens = _tokenize(" ".join(tags) + " " + desc)
+    return len(pergunta_tokens.intersection(entry_tokens))
+
+
+def _build_options_text(candidate_ids: list[str], *, max_total_chars: int = 4000, max_desc_chars: int = 140) -> str:
+    """
+    Monta lista de opções com orçamento rígido de caracteres.
+    """
+    lines: list[str] = []
+    total = 0
+    for cid in candidate_ids:
+        entry = CATALOGO.get(cid)
+        if not entry:
+            continue
+        desc = entry.get("descricao_curta") or entry.get("descricao") or ""
+        line = f"- ID: {cid} | Descrição: {_truncate(desc, max_desc_chars)}"
+        if total + len(line) + 1 > max_total_chars:
+            break
+        lines.append(line)
+        total += len(line) + 1
+    return "\n".join(lines).strip()
 
 def identify_table(pergunta_usuario):
     """Returns the dictionary for the chosen table or None"""
@@ -16,22 +72,22 @@ def identify_table(pergunta_usuario):
 
     llm = ChatDatabricks(endpoint=LLM_ENDPOINT, temperature=0)
 
-    # 1) Recuperação Top-K (Vector Search) para não enviar o catálogo inteiro ao LLM.
-    candidates = retrieve_top_k_catalog(pergunta_usuario, k=5, columns=["id"])
-    candidate_ids = [c.get("id") for c in candidates if c.get("id")]
+    # Pré-filtro local (sem Vector Search) para enviar poucas opções ao LLM.
+    pergunta_tokens = _tokenize(pergunta_usuario)
+    scored = []
+    for cid, entry in CATALOGO.items():
+        scored.append((cid, _score_entry(pergunta_tokens, entry)))
 
-    # Fallback (sem Vector Search): usa todas as opções, mas ainda com descrição curta.
-    if candidate_ids:
-        opcoes = []
-        for cid in candidate_ids:
-            if cid in CATALOGO:
-                v = CATALOGO[cid]
-                opcoes.append(f"- ID: {cid} | Descrição: {v.get('descricao_curta') or v.get('descricao')}")
-        lista_texto = "\n".join(opcoes).strip()
+    scored.sort(key=lambda x: (-x[1], x[0]))
+    best_score = scored[0][1] if scored else 0
+
+    # Se houver sinal, manda Top-K; se não, manda todas (ainda com cap rígido).
+    if best_score > 0:
+        candidate_ids = [cid for cid, _s in scored[:8]]
     else:
-        lista_texto = ""
-        for k, v in CATALOGO.items():
-            lista_texto += f"- ID: {k} | Descrição: {v.get('descricao_curta') or v.get('descricao')}\n"
+        candidate_ids = [cid for cid, _s in scored[:20]]
+
+    lista_texto = _build_options_text(candidate_ids)
 
     prompt = ChatPromptTemplate.from_template(ROUTER_TEMPLATE)
     chain = prompt | llm | StrOutputParser()
