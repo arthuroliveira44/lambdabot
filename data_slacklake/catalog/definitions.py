@@ -135,4 +135,70 @@ CATALOGO = {
         ],
         tags=["kpi", "semanal", "receita", "gmv", "pedidos", "clientes", "segmento"],
     ),
+    "kpi_daily_features": _make_entry(
+        id="kpi_daily_features",
+        descricao=(
+            "Features diárias por KPI (médias móveis, z-score e variações vs períodos anteriores), "
+            "segmentadas por BU/tipo de negócio/cliente e atributos da operação."
+        ),
+        descricao_curta="KPIs e features diárias (médias móveis, z-score, WoW/MoM, dia útil/feriado).",
+        tabela="dev.diamond.fact_kpi_daily_features",
+        # Observação: o grão exato depende da modelagem; descrevemos de forma conservadora.
+        grao=(
+            "Provável grão: 1 linha por processed_date x kpi_metric x (dimensões de operação: bu, business_type, "
+            "customer_type, operation_segment, operation_event_type, platform, in_or_out, country, currency)."
+        ),
+        tempo_coluna="processed_date",
+        medidas=[
+            "kpi_metric (string): identificador da métrica (valores variam por domínio)",
+            "kpi_value (double): valor diário da métrica no grão da linha",
+            "avg_7d/avg_30d/avg_90d (double): médias móveis em dias de calendário",
+            "bd_avg_7bd/bd_avg_30bd/bd_avg_90bd (double): médias móveis considerando dias úteis",
+            "zscore_7d/zscore_30d/zscore_90d (double): desvio padronizado vs histórico",
+            "pct_vs_prev_calendar_day/pct_vs_prev_business_day (double): variação vs dia anterior",
+            "pct_wow_calendar/pct_mom_calendar (double): variação WoW/MoM",
+            "google_day (boolean) e métricas relacionadas: efeito de Google Day",
+        ],
+        dimensoes=[
+            "bu (string): regra de negócio antiga para dividir operações",
+            "business_type (string): segmento derivado de BU + customer_type",
+            "customer_type (string): PF ou PJ",
+            "operation_segment (string): segmento da operação",
+            "operation_event_type (string): Recorrência | Aquisição | Ativação (strings exatas podem variar)",
+            "operation_platform_beecambio (string): origem/canal da operação (site/app/etc.)",
+            "in_or_out (string): envio ou recebimento (strings exatas podem variar)",
+            "country (string) e currency_abbreviation (string): país e moeda",
+            "is_business_day/is_holiday/is_weekend/dayofweek: calendários e flags",
+        ],
+        regras_sql=[
+            "Sempre filtre por kpi_metric (ou liste kpi_metric com LIMIT) antes de analisar kpi_value.",
+            "Como o grão pode incluir várias dimensões, evite SUM(kpi_value) sem agrupar/filtrar dimensões (risco de duplicação).",
+            "Para séries temporais, use processed_date como eixo de tempo; para dias úteis, use is_business_day/is_holiday/is_weekend.",
+            "Evite SELECT *: selecione apenas colunas necessárias (tabela tem muitas features) para reduzir custo e evitar excesso de tokens.",
+            "Para perguntas de 'anomalia', prefira zscore_30d (ou zscore_30d_ex_google quando fizer sentido) e traga apenas Top N dias/segmentos.",
+            "Use LIMIT em consultas exploratórias; para respostas finais, gere SQL agregando para um resultado pequeno.",
+        ],
+        tags=[
+            "kpi",
+            "diario",
+            "daily",
+            "features",
+            "media movel",
+            "moving average",
+            "zscore",
+            "anomalia",
+            "wow",
+            "mom",
+            "dia util",
+            "feriado",
+            "fim de semana",
+            "google day",
+            "segmento",
+            "bu",
+            "pf",
+            "pj",
+            "envio",
+            "recebimento",
+        ],
+    ),
 }
