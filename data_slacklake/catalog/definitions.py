@@ -7,6 +7,45 @@ from __future__ import annotations
 from textwrap import dedent
 
 
+def _stringify(value) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _truncate(text: str, max_chars: int) -> str:
+    t = _stringify(text)
+    if len(t) <= max_chars:
+        return t
+    return t[: max_chars - 1] + "…"
+
+
+def _cap_total(text: str, max_chars: int) -> str:
+    t = _stringify(text)
+    if len(t) <= max_chars:
+        return t
+    return t[: max_chars - 1] + "…"
+
+
+def _cap_bullets(
+    items,
+    *,
+    max_items: int,
+    max_chars_per_item: int,
+    max_total_chars: int,
+) -> str:
+    out = []
+    total = 0
+    for raw in (items or [])[:max_items]:
+        s = _truncate(_stringify(raw), max_chars_per_item)
+        line = f"- {s}" if s else "- (vazio)"
+        if total + len(line) + 1 > max_total_chars:
+            break
+        out.append(line)
+        total += len(line) + 1
+    return "\n".join(out).strip()
+
+
 def _build_router_doc(entry: dict) -> str:
     """
     Texto curto para recuperação/roteamento (Vector Search / Top-K).
@@ -14,18 +53,20 @@ def _build_router_doc(entry: dict) -> str:
     """
     tags = entry.get("tags") or []
     medidas = entry.get("medidas") or []
-    medidas_txt = ", ".join(medidas[:6])
-    tags_txt = ", ".join(tags[:12])
+
+    # Limites para evitar crescimento descontrolado (tokens).
+    medidas_txt = ", ".join([_truncate(_stringify(m), 80) for m in medidas[:6] if _stringify(m)])
+    tags_txt = ", ".join([_truncate(_stringify(t), 40) for t in tags[:12] if _stringify(t)])
     parts = [
-        f"ID: {entry['id']}",
-        f"Descrição: {entry.get('descricao_curta') or entry.get('descricao') or ''}",
-        f"Tabela: {entry.get('tabela') or ''}",
-        f"Grão: {entry.get('grao') or ''}",
-        f"Tempo: {entry.get('tempo_coluna') or ''}",
+        f"ID: {_stringify(entry.get('id'))}",
+        f"Descrição: {_truncate(entry.get('descricao_curta') or entry.get('descricao') or '', 240)}",
+        f"Tabela: {_stringify(entry.get('tabela') or '')}",
+        f"Grão: {_truncate(entry.get('grao') or '', 180)}",
+        f"Tempo: {_stringify(entry.get('tempo_coluna') or '')}",
         f"Medidas: {medidas_txt}" if medidas_txt else "",
         f"Tags: {tags_txt}" if tags_txt else "",
     ]
-    return "\n".join([p for p in parts if p]).strip()
+    return _cap_total("\n".join([p for p in parts if p]).strip(), 1200)
 
 
 def _build_sql_context(entry: dict) -> str:
@@ -37,16 +78,17 @@ def _build_sql_context(entry: dict) -> str:
     dimensoes = entry.get("dimensoes") or []
     medidas = entry.get("medidas") or []
 
-    regras_txt = "\n".join([f"- {r}" for r in regras[:12]])
-    dims_txt = "\n".join([f"- {d}" for d in dimensoes[:12]])
-    meds_txt = "\n".join([f"- {m}" for m in medidas[:20]])
+    # Limites por item + total por seção para evitar context_length_exceeded.
+    regras_txt = _cap_bullets(regras, max_items=12, max_chars_per_item=240, max_total_chars=1800)
+    dims_txt = _cap_bullets(dimensoes, max_items=12, max_chars_per_item=200, max_total_chars=1400)
+    meds_txt = _cap_bullets(medidas, max_items=20, max_chars_per_item=200, max_total_chars=1800)
 
-    return dedent(
+    ctx = dedent(
         f"""
-        Você é um analista de dados. Use APENAS a tabela `{entry.get('tabela')}`.
+        Você é um analista de dados. Use APENAS a tabela `{_stringify(entry.get('tabela'))}`.
 
-        Grão (granularidade): {entry.get('grao')}
-        Coluna de tempo principal: {entry.get('tempo_coluna')}
+        Grão (granularidade): {_truncate(entry.get('grao') or '', 220)}
+        Coluna de tempo principal: {_stringify(entry.get('tempo_coluna') or '')}
 
         Medidas/Métricas (como filtrar/usar):
         {meds_txt if meds_txt else "- (não especificado)"}
@@ -58,6 +100,7 @@ def _build_sql_context(entry: dict) -> str:
         {regras_txt if regras_txt else "- (não especificado)"}
         """
     ).strip()
+    return _cap_total(ctx, 5000)
 
 
 def _make_entry(**kwargs) -> dict:

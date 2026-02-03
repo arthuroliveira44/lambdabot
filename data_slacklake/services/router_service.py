@@ -21,7 +21,7 @@ _STOPWORDS_PT = {
     "qual", "quais", "quanto", "quantos", "quando", "onde", "como", "porque",
     "me", "minha", "meu", "seu", "sua", "suas", "seus",
     "isso", "essa", "esse", "essas", "esses", "isto", "aquele", "aquela",
-    "hoje", "ontem", "amanha", "mês", "mes", "semana", "dia", "ano",
+    "hoje", "ontem", "amanha", "amanhã",
 }
 
 

@@ -104,12 +104,42 @@ def _prepare_result_for_llm(colunas, dados, *, max_rows: int = 50, max_cols: int
     return json.dumps(payload, ensure_ascii=False)
 
 
-def process_question(pergunta):
-    """Fluxo: Router -> SQL -> DB -> Resposta"""
-
+def _generate_sql(pergunta: str, tabela_info: dict, llm) -> str:
     # pylint: disable=import-outside-toplevel
     from langchain_core.output_parsers import StrOutputParser
     from langchain_core.prompts import ChatPromptTemplate
+
+    prompt_sql = ChatPromptTemplate.from_template(SQL_GEN_TEMPLATE)
+    chain_sql = prompt_sql | llm | StrOutputParser()
+
+    return chain_sql.invoke(
+        {
+            "contexto_tabela": tabela_info.get("sql_context") or tabela_info.get("contexto"),
+            "pergunta": pergunta,
+        }
+    )
+
+
+def _interpret(pergunta: str, colunas, dados, llm) -> str:
+    # pylint: disable=import-outside-toplevel
+    from langchain_core.output_parsers import StrOutputParser
+    from langchain_core.prompts import ChatPromptTemplate
+
+    prompt_interpret = ChatPromptTemplate.from_template(INTERPRET_TEMPLATE)
+    chain_interpret = prompt_interpret | llm | StrOutputParser()
+
+    dados_compactos = _prepare_result_for_llm(colunas, dados)
+    return chain_interpret.invoke(
+        {
+            "pergunta": pergunta,
+            "colunas": colunas,
+            "dados": dados_compactos,
+        }
+    )
+
+
+def process_question(pergunta):
+    """Fluxo: Router -> SQL -> DB -> Resposta"""
 
     llm = get_llm()
 
@@ -117,13 +147,7 @@ def process_question(pergunta):
     if not tabela_info:
         return "Desculpe, não encontrei uma tabela no meu catálogo que responda isso.", None
 
-    prompt_sql = ChatPromptTemplate.from_template(SQL_GEN_TEMPLATE)
-    chain_sql = prompt_sql | llm | StrOutputParser()
-
-    sql_query_raw = chain_sql.invoke({
-        "contexto_tabela": tabela_info.get("sql_context") or tabela_info.get("contexto"),
-        "pergunta": pergunta
-    })
+    sql_query_raw = _generate_sql(pergunta, tabela_info, llm)
 
     try:
         sql_query = _apply_sql_guardrails(sql_query_raw)
@@ -135,14 +159,5 @@ def process_question(pergunta):
     except Exception as e:
         return f"Erro ao executar a query: {str(e)}", sql_query
 
-    prompt_interpret = ChatPromptTemplate.from_template(INTERPRET_TEMPLATE)
-    chain_interpret = prompt_interpret | llm | StrOutputParser()
-
-    dados_compactos = _prepare_result_for_llm(colunas, dados)
-    resposta_final = chain_interpret.invoke({
-        "pergunta": pergunta,
-        "colunas": colunas,
-        "dados": dados_compactos
-    })
-
+    resposta_final = _interpret(pergunta, colunas, dados, llm)
     return resposta_final, sql_query
