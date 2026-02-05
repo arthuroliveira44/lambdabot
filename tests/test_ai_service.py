@@ -2,6 +2,7 @@
 Unit tests for the AI Service and Main handler logic.
 Cleaned up to remove unused variables and focus on assertions.
 """
+import os
 from unittest.mock import MagicMock, patch
 
 from data_slacklake.services.ai_service import process_question
@@ -103,3 +104,22 @@ def test_app_mention_erro(mock_process):
 
     last_call_args = mock_say.call_args[0][0]
     assert "Erro crítico" in last_call_args or "Erro Catastrófico" in last_call_args
+
+
+@patch("data_slacklake.services.ai_service.ask_genie")
+@patch("data_slacklake.services.ai_service.identify_table")
+def test_fluxo_genie_quando_configurado(mock_identify, mock_ask_genie):
+    """Garante que, com GENIE habilitado, o fluxo usa ask_genie e não SQL/DB."""
+    mock_identify.return_value = {"id": "kpi_weekly", "contexto": "CTX"}
+    mock_ask_genie.return_value = ("Resposta Genie", "SELECT 1", "conv-1")
+
+    env = {
+        "GENIE_ENABLED": "true",
+        "GENIE_SPACE_MAP": '{"kpi_weekly":"space-123"}',
+    }
+    with patch.dict(os.environ, env, clear=False):
+        resposta, sql = process_question("Qual o total?")
+
+    assert resposta == "Resposta Genie"
+    assert sql == "SELECT 1"
+    mock_ask_genie.assert_called_once()

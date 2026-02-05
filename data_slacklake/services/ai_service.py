@@ -4,6 +4,7 @@ Service responsible for orchestrating AI calls and Natural Language Processing (
 from __future__ import annotations
 
 import json
+import os
 import re
 from functools import lru_cache
 
@@ -11,6 +12,7 @@ from data_slacklake.config import LLM_ENDPOINT
 from data_slacklake.prompts import INTERPRET_TEMPLATE, SQL_GEN_TEMPLATE
 from data_slacklake.services.db_service import execute_query
 from data_slacklake.services.router_service import identify_table
+from data_slacklake.services.genie_service import ask_genie
 
 
 @lru_cache(maxsize=16)
@@ -138,6 +140,35 @@ def _interpret(pergunta: str, colunas, dados, llm) -> str:
     )
 
 
+def _get_genie_space_id(tabela_info: dict) -> str | None:
+    """
+    Resolve Genie Space ID para um contexto.
+
+    Prioridade:
+    1) tabela_info['genie_space_id']
+    2) env GENIE_SPACE_MAP (JSON: {"context_id": "space_id"})
+    """
+    enabled = os.getenv("GENIE_ENABLED", "").strip().lower() in {"1", "true", "yes", "y", "on"}
+    if not enabled:
+        return None
+
+    if tabela_info.get("genie_space_id"):
+        return str(tabela_info["genie_space_id"]).strip() or None
+
+    ctx_id = tabela_info.get("id")
+    raw = os.getenv("GENIE_SPACE_MAP", "").strip()
+    if not (raw and ctx_id):
+        return None
+
+    try:
+        mapping = json.loads(raw)
+    except Exception:
+        return None
+
+    space_id = mapping.get(ctx_id)
+    return str(space_id).strip() if space_id else None
+
+
 def process_question(pergunta):
     """Fluxo: Router -> SQL -> DB -> Resposta"""
 
@@ -146,6 +177,16 @@ def process_question(pergunta):
     tabela_info = identify_table(pergunta)
     if not tabela_info:
         return "Desculpe, não encontrei uma tabela no meu catálogo que responda isso.", None
+
+    # Caminho Genie (se configurado para o contexto escolhido).
+    space_id = _get_genie_space_id(tabela_info)
+    if space_id:
+        try:
+            resposta, sql_debug, _conversation_id = ask_genie(space_id=space_id, pergunta=pergunta)
+            return resposta, sql_debug
+        except Exception as e:
+            # fallback para fluxo SQL tradicional
+            return f"Falha ao consultar Genie (fallback para SQL): {str(e)}", None
 
     sql_query_raw = _generate_sql(pergunta, tabela_info, llm)
 
