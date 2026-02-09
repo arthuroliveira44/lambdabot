@@ -4,11 +4,11 @@ Service responsible for orchestrating AI calls and Natural Language Processing (
 from __future__ import annotations
 
 import json
-import os
 import re
 from functools import lru_cache
 
 from data_slacklake.config import LLM_ENDPOINT
+import data_slacklake.config as cfg
 from data_slacklake.prompts import INTERPRET_TEMPLATE, SQL_GEN_TEMPLATE
 from data_slacklake.services.db_service import execute_query
 from data_slacklake.services.router_service import identify_table
@@ -148,15 +148,14 @@ def _get_genie_space_id(tabela_info: dict) -> str | None:
     1) tabela_info['genie_space_id']
     2) env GENIE_SPACE_MAP (JSON: {"context_id": "space_id"})
     """
-    enabled = os.getenv("GENIE_ENABLED", "").strip().lower() in {"1", "true", "yes", "y", "on"}
-    if not enabled:
+    if not cfg.GENIE_ENABLED:
         return None
 
     if tabela_info.get("genie_space_id"):
         return str(tabela_info["genie_space_id"]).strip() or None
 
     ctx_id = tabela_info.get("id")
-    raw = os.getenv("GENIE_SPACE_MAP", "").strip()
+    raw = cfg.GENIE_SPACE_MAP
     if not (raw and ctx_id):
         return None
 
