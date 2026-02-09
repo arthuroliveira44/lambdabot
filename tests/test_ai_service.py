@@ -2,10 +2,8 @@
 Unit tests for the AI Service and Main handler logic.
 Cleaned up to remove unused variables and focus on assertions.
 """
+# pylint: disable=import-outside-toplevel
 from unittest.mock import MagicMock, patch
-
-from data_slacklake.services.ai_service import process_question
-from main import handle_app_mentions
 
 
 @patch("databricks_langchain.ChatDatabricks")
@@ -26,6 +24,8 @@ def test_fluxo_completo_sucesso(mock_identify, mock_db, _mock_chat_cls):
         mock_chain_final.invoke.side_effect = ["SELECT * FROM vendas", "O total é 10."]
 
         mock_prompt.return_value.__or__.return_value.__or__.return_value = mock_chain_final
+
+        from data_slacklake.services.ai_service import process_question
 
         resposta, sql = process_question("Qual o total?")
 
@@ -52,6 +52,8 @@ def test_erro_banco_dados(_mock_get_llm, mock_identify, mock_db):
         mock_chain.invoke.return_value = "SELECT * FROM vendas"
         mock_prompt.return_value.__or__.return_value.__or__.return_value = mock_chain
 
+        from data_slacklake.services.ai_service import process_question
+
         resposta, sql = process_question("Qual o total?")
 
         assert "Erro ao executar a query" in resposta
@@ -74,6 +76,8 @@ def test_app_mention_fluxo_sucesso(mock_process):
             "ts": "12345.6789"
         }
     }
+
+    from main import handle_app_mentions
 
     handle_app_mentions(body, mock_say)
 
@@ -99,6 +103,8 @@ def test_app_mention_erro(mock_process):
     mock_say = MagicMock()
     body = {"event": {"text": "teste", "user": "U1"}}
 
+    from main import handle_app_mentions
+
     handle_app_mentions(body, mock_say)
 
     last_call_args = mock_say.call_args[0][0]
@@ -113,6 +119,7 @@ def test_fluxo_genie_quando_configurado(mock_identify, mock_ask_genie):
     mock_ask_genie.return_value = ("Resposta Genie", "SELECT 1", "conv-1")
 
     with patch("data_slacklake.config.GENIE_ENABLED", True), patch("data_slacklake.config.GENIE_SPACE_ID", "space-123"):
+        from data_slacklake.services.ai_service import process_question
         resposta, sql = process_question("Qual o total?")
 
     assert resposta == "Resposta Genie"
