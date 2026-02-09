@@ -18,7 +18,7 @@ os.environ.setdefault("GENIE_ENABLED", "false")
 os.environ.pop("GENIE_SPACE_ID", None)
 os.environ.pop("GENIE_SPACE_MAP", None)
 
-# Config obrigatória (evita import-time failures quando SSM está desabilitado em testes).
+# Config obrigatória (evita import-time failures).
 os.environ.setdefault("app_env", "test")
 os.environ.setdefault("SLACK_BOT_TOKEN", "xoxb-test-token")
 os.environ.setdefault("SLACK_SIGNING_SECRET", "test-secret")
@@ -31,6 +31,16 @@ os.environ.setdefault("LANGCHAIN_TRACING_V2", "false")
 os.environ.setdefault("LANGCHAIN_TRACING", "false")
 os.environ.setdefault("LANGSMITH_TRACING", "false")
 
+mock_ssm_client = MagicMock()
+mock_ssm_client.get_parameter.return_value = {
+    "Parameter": {
+        "Value": "dummy_secret_value_for_testing"
+    }
+}
+
+patcher_boto = patch("boto3.client", return_value=mock_ssm_client)
+patcher_boto.start()
+
 # Se o módulo config já tiver sido importado por plugins/side-effects,
 # garanta que o "cache" em memória também está desligado.
 try:
@@ -42,16 +52,6 @@ try:
 except Exception:
     # Se ainda não existe no sys.path durante a coleta, ignore.
     pass
-
-mock_ssm_client = MagicMock()
-mock_ssm_client.get_parameter.return_value = {
-    "Parameter": {
-        "Value": "dummy_secret_value_for_testing"
-    }
-}
-
-patcher_boto = patch("boto3.client", return_value=mock_ssm_client)
-patcher_boto.start()
 
 mock_auth_response = {
     "ok": True,

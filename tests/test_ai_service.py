@@ -85,7 +85,8 @@ def test_app_mention_fluxo_sucesso(mock_process):
 
     assert mock_say.call_count >= 2
 
-    mock_say.assert_any_call("Resposta Final da IA")
+    # Pode vir com ou sem kwargs (ex.: thread_ts), então validamos pelo texto.
+    assert any(call.args and call.args[0] == "Resposta Final da IA" for call in mock_say.call_args_list)
 
     calls = mock_say.call_args_list
     debug_call = calls[-1]
