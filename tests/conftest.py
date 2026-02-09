@@ -18,6 +18,14 @@ os.environ.setdefault("GENIE_ENABLED", "false")
 os.environ.pop("GENIE_SPACE_ID", None)
 os.environ.pop("GENIE_SPACE_MAP", None)
 
+# Config obrigatória (evita import-time failures quando SSM está desabilitado em testes).
+os.environ.setdefault("app_env", "test")
+os.environ.setdefault("SLACK_BOT_TOKEN", "xoxb-test-token")
+os.environ.setdefault("SLACK_SIGNING_SECRET", "test-secret")
+os.environ.setdefault("DATABRICKS_TOKEN", "test-db-token")
+os.environ.setdefault("DATABRICKS_HOST", "test.databricks.com")
+os.environ.setdefault("DATABRICKS_HTTP_PATH", "/sql/1.0/endpoints/test")
+
 # Evita qualquer tracing externo automático durante testes.
 os.environ.setdefault("LANGCHAIN_TRACING_V2", "false")
 os.environ.setdefault("LANGCHAIN_TRACING", "false")
