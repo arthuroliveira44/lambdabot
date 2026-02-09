@@ -112,9 +112,7 @@ def test_fluxo_genie_quando_configurado(mock_identify, mock_ask_genie):
     mock_identify.return_value = {"id": "kpi_weekly", "contexto": "CTX"}
     mock_ask_genie.return_value = ("Resposta Genie", "SELECT 1", "conv-1")
 
-    with patch("data_slacklake.config.GENIE_ENABLED", True), patch(
-        "data_slacklake.config.GENIE_SPACE_MAP", '{"kpi_weekly":"space-123"}'
-    ):
+    with patch("data_slacklake.config.GENIE_ENABLED", True), patch("data_slacklake.config.GENIE_SPACE_ID", "space-123"):
         resposta, sql = process_question("Qual o total?")
 
     assert resposta == "Resposta Genie"

@@ -146,13 +146,17 @@ def _get_genie_space_id(tabela_info: dict) -> str | None:
 
     Prioridade:
     1) tabela_info['genie_space_id']
-    2) env GENIE_SPACE_MAP (JSON: {"context_id": "space_id"})
+    2) config GENIE_SPACE_ID (Space global para todos os contextos)
+    3) config/env GENIE_SPACE_MAP (JSON: {"context_id": "space_id"}) (fallback legado)
     """
     if not cfg.GENIE_ENABLED:
         return None
 
     if tabela_info.get("genie_space_id"):
         return str(tabela_info["genie_space_id"]).strip() or None
+
+    if cfg.GENIE_SPACE_ID:
+        return cfg.GENIE_SPACE_ID
 
     ctx_id = tabela_info.get("id")
     raw = cfg.GENIE_SPACE_MAP

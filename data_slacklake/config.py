@@ -53,6 +53,7 @@ def _env_bool(name: str, default: str = "false") -> bool:
 
 # Default "true" conforme solicitado.
 GENIE_ENABLED = _env_bool("GENIE_ENABLED", "true")
+GENIE_SPACE_ID = os.getenv("GENIE_SPACE_ID", "").strip()
 GENIE_SPACE_MAP = os.getenv("GENIE_SPACE_MAP", "").strip()
 
 
