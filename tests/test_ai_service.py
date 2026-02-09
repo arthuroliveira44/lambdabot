@@ -119,7 +119,10 @@ def test_fluxo_genie_quando_configurado(mock_identify, mock_ask_genie):
     mock_identify.return_value = {"id": "kpi_weekly", "contexto": "CTX"}
     mock_ask_genie.return_value = ("Resposta Genie", "SELECT 1", "conv-1")
 
-    with patch("data_slacklake.config.GENIE_ENABLED", True), patch("data_slacklake.config.GENIE_SPACE_ID", "space-123"):
+    # Patch no módulo `cfg` referenciado por ai_service (evita efeitos de cache/import em tempo de teste)
+    with patch("data_slacklake.services.ai_service.cfg.GENIE_ENABLED", True), patch(
+        "data_slacklake.services.ai_service.cfg.GENIE_SPACE_ID", "space-123"
+    ):
         from data_slacklake.services.ai_service import process_question
         resposta, sql = process_question("Qual o total?")
 

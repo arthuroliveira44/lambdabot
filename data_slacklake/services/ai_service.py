@@ -174,9 +174,6 @@ def _get_genie_space_id(tabela_info: dict) -> str | None:
 
 def process_question(pergunta):
     """Fluxo: Router -> SQL -> DB -> Resposta"""
-
-    llm = get_llm()
-
     tabela_info = identify_table(pergunta)
     if not tabela_info:
         return "Desculpe, não encontrei uma tabela no meu catálogo que responda isso.", None
@@ -190,6 +187,8 @@ def process_question(pergunta):
         except Exception as e:
             # fallback para fluxo SQL tradicional
             return f"Falha ao consultar Genie (fallback para SQL): {str(e)}", None
+
+    llm = get_llm()
 
     sql_query_raw = _generate_sql(pergunta, tabela_info, llm)
 
