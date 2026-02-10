@@ -174,6 +174,16 @@ def _get_genie_space_id(tabela_info: dict) -> str | None:
 
 def process_question(pergunta):
     """Fluxo: Router -> SQL -> DB -> Resposta"""
+    # pylint: disable=too-many-return-statements
+    # Modo Genie direto (ignora catálogo/roteador).
+    # Se configurado, toda pergunta vai para o Genie Space global.
+    if cfg.GENIE_ENABLED and cfg.GENIE_SPACE_ID:
+        try:
+            resposta, sql_debug, _conversation_id = ask_genie(space_id=cfg.GENIE_SPACE_ID, pergunta=pergunta)
+            return resposta, sql_debug
+        except Exception as e:
+            return f"Falha ao consultar Genie: {str(e)}", None
+
     tabela_info = identify_table(pergunta)
     if not tabela_info:
         return "Desculpe, não encontrei uma tabela no meu catálogo que responda isso.", None

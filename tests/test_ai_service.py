@@ -116,7 +116,6 @@ def test_app_mention_erro(mock_process):
 @patch("data_slacklake.services.ai_service.identify_table")
 def test_fluxo_genie_quando_configurado(mock_identify, mock_ask_genie):
     """Garante que, com GENIE habilitado, o fluxo usa ask_genie e não SQL/DB."""
-    mock_identify.return_value = {"id": "kpi_weekly", "contexto": "CTX"}
     mock_ask_genie.return_value = ("Resposta Genie", "SELECT 1", "conv-1")
 
     # Patch no módulo `cfg` referenciado por ai_service (evita efeitos de cache/import em tempo de teste)
@@ -129,3 +128,4 @@ def test_fluxo_genie_quando_configurado(mock_identify, mock_ask_genie):
     assert resposta == "Resposta Genie"
     assert sql == "SELECT 1"
     mock_ask_genie.assert_called_once()
+    mock_identify.assert_not_called()
