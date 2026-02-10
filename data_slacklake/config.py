@@ -44,8 +44,10 @@ SLACK_SIGNING_SECRET = get_ssm_param(SSM_PREFIX, "slack_app_token")
 DATABRICKS_TOKEN = get_ssm_param(SSM_PREFIX, "databricks_pat_token")
 DATABRICKS_HOST = get_ssm_param(SSM_PREFIX, "databricks_url")
 DATABRICKS_HTTP_PATH = get_ssm_param(SSM_PREFIX, "databricks_http_path")
-LLM_ENDPOINT = os.getenv("LLM_ENDPOINT", "databricks-gpt-5-2")
-
+LLM_ENDPOINT = os.getenv("LLM_ENDPOINT", "databricks-llama-4-maverick")
+GENIE_ENABLED = os.getenv("GENIE_ENABLED", "true")
+GENIE_SPACE_ID = os.getenv("GENIE_SPACE_ID", "01f105e3c99e1527b3cb9bd0f5418626")
+GENIE_SPACE_MAP = os.getenv("GENIE_SPACE_MAP", "")
 
 if DATABRICKS_HOST:
     os.environ["DATABRICKS_HOST"] = DATABRICKS_HOST

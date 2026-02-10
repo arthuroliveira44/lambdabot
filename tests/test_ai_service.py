@@ -2,16 +2,14 @@
 Unit tests for the AI Service and Main handler logic.
 Cleaned up to remove unused variables and focus on assertions.
 """
+# pylint: disable=import-outside-toplevel
 from unittest.mock import MagicMock, patch
-
-from data_slacklake.services.ai_service import process_question
-from main import handle_app_mentions
 
 
 @patch("databricks_langchain.ChatDatabricks")
 @patch("data_slacklake.services.ai_service.execute_query")
 @patch("data_slacklake.services.ai_service.identify_table")
-def test_fluxo_completo_sucesso(mock_identify, mock_db, _mock_chat_cls):
+def test_full_process_sucess(mock_identify, mock_db, _mock_chat_cls):
     """
     Test: Identify -> Generate SQL -> Execute DB -> Interpret.
     """
@@ -27,18 +25,20 @@ def test_fluxo_completo_sucesso(mock_identify, mock_db, _mock_chat_cls):
 
         mock_prompt.return_value.__or__.return_value.__or__.return_value = mock_chain_final
 
+        from data_slacklake.services.ai_service import process_question
+
         resposta, sql = process_question("Qual o total?")
 
         assert resposta == "O total é 10."
-        assert sql == "SELECT * FROM vendas"
+        assert sql == "SELECT * FROM vendas\nLIMIT 100"
 
-        mock_db.assert_called_once_with("SELECT * FROM vendas")
+        mock_db.assert_called_once_with("SELECT * FROM vendas\nLIMIT 100")
 
 
 @patch("data_slacklake.services.ai_service.execute_query")
 @patch("data_slacklake.services.ai_service.identify_table")
 @patch("data_slacklake.services.ai_service.get_llm")
-def test_erro_banco_dados(_mock_get_llm, mock_identify, mock_db):
+def test_databricks_error(_mock_get_llm, mock_identify, mock_db):
     """
     Tests whether the code handles exceptions thrown from execute_query.
     """
@@ -52,15 +52,17 @@ def test_erro_banco_dados(_mock_get_llm, mock_identify, mock_db):
         mock_chain.invoke.return_value = "SELECT * FROM vendas"
         mock_prompt.return_value.__or__.return_value.__or__.return_value = mock_chain
 
+        from data_slacklake.services.ai_service import process_question
+
         resposta, sql = process_question("Qual o total?")
 
         assert "Erro ao executar a query" in resposta
         assert "Conexão recusada" in resposta
-        assert sql == "SELECT * FROM vendas"
+        assert sql == "SELECT * FROM vendas\nLIMIT 100"
 
 
 @patch("data_slacklake.services.ai_service.process_question")
-def test_app_mention_fluxo_sucesso(mock_process):
+def test_app_mention_sucess(mock_process):
     """
     Test if the bot responds twice: 'Checking...' and the Final Response.
     """
@@ -75,13 +77,15 @@ def test_app_mention_fluxo_sucesso(mock_process):
         }
     }
 
+    from main import handle_app_mentions
+
     handle_app_mentions(body, mock_say)
 
     mock_process.assert_called_with("analyze os dados")
 
     assert mock_say.call_count >= 2
 
-    mock_say.assert_any_call("Resposta Final da IA")
+    assert any(call.args and call.args[0] == "Resposta Final da IA" for call in mock_say.call_args_list)
 
     calls = mock_say.call_args_list
     debug_call = calls[-1]
@@ -90,7 +94,7 @@ def test_app_mention_fluxo_sucesso(mock_process):
 
 
 @patch("data_slacklake.services.ai_service.process_question")
-def test_app_mention_erro(mock_process):
+def test_app_mention_error(mock_process):
     """
     Tests whether the bot notifies the user when the backend crashes.
     """
@@ -99,7 +103,27 @@ def test_app_mention_erro(mock_process):
     mock_say = MagicMock()
     body = {"event": {"text": "teste", "user": "U1"}}
 
+    from main import handle_app_mentions
+
     handle_app_mentions(body, mock_say)
 
     last_call_args = mock_say.call_args[0][0]
     assert "Erro crítico" in last_call_args or "Erro Catastrófico" in last_call_args
+
+
+@patch("data_slacklake.services.ai_service.ask_genie")
+@patch("data_slacklake.services.ai_service.identify_table")
+def test_genie_flow(mock_identify, mock_ask_genie):
+    """Garante que o fluxo usa ask_genie e não SQL/DB."""
+    mock_identify.return_value = {"id": "kpi_weekly", "contexto": "CTX"}
+    mock_ask_genie.return_value = ("Resposta Genie", "SELECT 1", "conv-1")
+
+    with patch("data_slacklake.services.ai_service.cfg.GENIE_ENABLED", True), patch(
+        "data_slacklake.services.ai_service.cfg.GENIE_SPACE_ID", "space-123"
+    ):
+        from data_slacklake.services.ai_service import process_question
+        resposta, sql = process_question("Qual o total?")
+
+    assert resposta == "Resposta Genie"
+    assert sql == "SELECT 1"
+    mock_ask_genie.assert_called_once()

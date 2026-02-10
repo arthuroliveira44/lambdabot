@@ -32,6 +32,7 @@ def handle_app_mentions(body, say):
     text = event.get("text", "")
     user = event.get("user", "Desconhecido")
     ts = event.get("ts")
+    thread_ts = event.get("thread_ts") or ts
 
     if ">" in text:
         pergunta = text.split(">", 1)[1].strip()
@@ -39,21 +40,21 @@ def handle_app_mentions(body, say):
         pergunta = text.strip()
 
     if not pergunta:
-        say(f"Olá <@{user}>! Como posso ajudar?")
+        say(f"Olá <@{user}>! Como posso ajudar?", thread_ts=thread_ts)
         return
 
     logger.info(f"Pergunta de {user}: {pergunta}")
-    say(f"Olá <@{user}>! Processando sua pergunta: *'{pergunta}'*...")
+    say(f"Olá <@{user}>! Processando sua pergunta: *'{pergunta}'*...", thread_ts=thread_ts)
 
     try:
         from data_slacklake.services.ai_service import process_question
         resposta, sql_debug = process_question(pergunta)
-        say(resposta)
+        say(resposta, thread_ts=thread_ts)
         if sql_debug:
-            say(f"*Debug SQL:* ```{sql_debug}```", thread_ts=ts)
+            say(f"*Debug SQL:* ```{sql_debug}```", thread_ts=thread_ts)
     except Exception as e:
         logger.error(f"Erro: {str(e)}", exc_info=True)
-        say(f"Erro: {str(e)}")
+        say(f"Erro: {str(e)}", thread_ts=thread_ts)
 
 
 def handler(event, context):
