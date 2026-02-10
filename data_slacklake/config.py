@@ -14,7 +14,6 @@ APP_ENV = os.getenv("app_env", "dev")
 
 SSM_PREFIX = f"/{APP_ENV}/data-slacklake"
 
-
 @lru_cache(maxsize=16)
 def get_ssm_param(prefix, param_name, required=True):
     """
@@ -45,6 +44,16 @@ DATABRICKS_TOKEN = get_ssm_param(SSM_PREFIX, "databricks_pat_token")
 DATABRICKS_HOST = get_ssm_param(SSM_PREFIX, "databricks_url")
 DATABRICKS_HTTP_PATH = get_ssm_param(SSM_PREFIX, "databricks_http_path")
 LLM_ENDPOINT = os.getenv("LLM_ENDPOINT", "databricks-gpt-5-2")
+
+# Genie (Databricks)
+def _env_bool(name: str, default: str = "false") -> bool:
+    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+# Default "true" conforme solicitado.
+GENIE_ENABLED = _env_bool("GENIE_ENABLED", "true")
+GENIE_SPACE_ID = os.getenv("GENIE_SPACE_ID", "").strip()
+GENIE_SPACE_MAP = os.getenv("GENIE_SPACE_MAP", "").strip()
 
 
 if DATABRICKS_HOST:

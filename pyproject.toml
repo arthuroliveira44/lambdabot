@@ -28,4 +28,9 @@ pylint = "^3.3.4"
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
+[tool.pytest.ini_options]
+# Evita travamentos por plugins que tentam rede (ex.: langsmith) durante unit tests.
+addopts = "-p no:langsmith"
+testpaths = ["tests"]
+
 
