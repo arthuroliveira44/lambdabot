@@ -8,7 +8,7 @@ para responder perguntas, com retorno textual (e SQL opcional) sem estourar toke
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Optional, Tuple
+from typing import Any
 
 from databricks.sdk import WorkspaceClient
 
@@ -25,35 +25,51 @@ def get_workspace_client() -> WorkspaceClient:
     return WorkspaceClient(host=DATABRICKS_HOST, token=DATABRICKS_TOKEN)
 
 
-def ask_genie(space_id: str, pergunta: str, conversation_id: Optional[str] = None) -> Tuple[str, Optional[str], str]:
+def _extract_genie_response_parts(message: Any) -> tuple[str, str | None]:
+    text_parts: list[str] = []
+    sql_parts: list[str] = []
+
+    for attachment in message.attachments or []:
+        if attachment.text and attachment.text.content:
+            text_parts.append(attachment.text.content.strip())
+        if attachment.query and attachment.query.query:
+            sql_parts.append(attachment.query.query.strip())
+
+    response_text = "\n\n".join([part for part in text_parts if part]).strip()
+    if not response_text:
+        response_text = "Não consegui obter uma resposta textual do Genie para essa pergunta."
+
+    sql_debug = "\n\n".join([query for query in sql_parts if query]).strip() or None
+    return response_text, sql_debug
+
+
+def ask_genie(
+    space_id: str,
+    pergunta: str,
+    conversation_id: str | None = None,
+) -> tuple[str, str | None, str | None]:
     """
     Envia pergunta para um Genie Space e retorna:
     - resposta_texto (string)
     - sql_debug (string opcional, se Genie gerar query)
     - conversation_id (para encadear conversas, se desejado)
     """
-    ws = get_workspace_client()
+    workspace_client = get_workspace_client()
 
     if conversation_id:
-        msg = ws.genie.create_message_and_wait(space_id=space_id, conversation_id=conversation_id, content=pergunta)
+        message = workspace_client.genie.create_message_and_wait(
+            space_id=space_id,
+            conversation_id=conversation_id,
+            content=pergunta,
+        )
     else:
-        msg = ws.genie.start_conversation_and_wait(space_id=space_id, content=pergunta)
+        message = workspace_client.genie.start_conversation_and_wait(space_id=space_id, content=pergunta)
 
-    text_parts = []
-    sql_parts = []
+    if message.error:
+        logger.warning(
+            "Genie retornou erro: %s",
+            message.error.as_dict() if hasattr(message.error, "as_dict") else str(message.error),
+        )
 
-    for att in msg.attachments or []:
-        if att.text and att.text.content:
-            text_parts.append(att.text.content.strip())
-        if att.query and att.query.query:
-            sql_parts.append(att.query.query.strip())
-
-    if msg.error:
-        logger.warning("Genie retornou erro: %s", msg.error.as_dict() if hasattr(msg.error, "as_dict") else str(msg.error))
-
-    resposta = "\n\n".join([p for p in text_parts if p]).strip()
-    if not resposta:
-        resposta = "Não consegui obter uma resposta textual do Genie para essa pergunta."
-
-    sql_debug = "\n\n".join([q for q in sql_parts if q]).strip() or None
-    return resposta, sql_debug, msg.conversation_id
+    response_text, sql_debug = _extract_genie_response_parts(message)
+    return response_text, sql_debug, message.conversation_id

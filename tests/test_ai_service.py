@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 @patch("databricks_langchain.ChatDatabricks")
 @patch("data_slacklake.services.ai_service.execute_query")
 @patch("data_slacklake.services.ai_service.identify_table")
-def test_full_process_sucess(mock_identify, mock_db, _mock_chat_cls):
+def test_full_process_success(mock_identify, mock_db, _mock_chat_cls):
     """
     Test: Identify -> Generate SQL -> Execute DB -> Interpret.
     """
@@ -62,24 +62,24 @@ def test_databricks_error(_mock_get_llm, mock_identify, mock_db):
 
 
 @patch("data_slacklake.services.ai_service.process_question")
-def test_app_mention_sucess(mock_process):
+def test_app_mention_success(mock_process):
     """
     Test if the bot responds twice: 'Checking...' and the Final Response.
     """
     mock_process.return_value = ("Resposta Final da IA", "SELECT * FROM debug")
 
     mock_say = MagicMock()
-    body = {
+    event_body = {
         "event": {
             "text": "<@BOT_ID> analyze os dados",
             "user": "USER_ID",
-            "ts": "12345.6789"
+            "ts": "12345.6789",
         }
     }
 
     from main import handle_app_mentions
 
-    handle_app_mentions(body, mock_say)
+    handle_app_mentions(event_body, mock_say)
 
     mock_process.assert_called_with("analyze os dados")
 
@@ -87,10 +87,9 @@ def test_app_mention_sucess(mock_process):
 
     assert any(call.args and call.args[0] == "Resposta Final da IA" for call in mock_say.call_args_list)
 
-    calls = mock_say.call_args_list
-    debug_call = calls[-1]
+    debug_call = mock_say.call_args_list[-1]
     assert "SELECT * FROM debug" in debug_call[0][0]
-    assert debug_call[1]['thread_ts'] == "12345.6789"
+    assert debug_call[1]["thread_ts"] == "12345.6789"
 
 
 @patch("data_slacklake.services.ai_service.process_question")
@@ -118,8 +117,8 @@ def test_genie_flow(mock_identify, mock_ask_genie):
     mock_identify.return_value = {"id": "kpi_weekly", "contexto": "CTX"}
     mock_ask_genie.return_value = ("Resposta Genie", "SELECT 1", "conv-1")
 
-    with patch("data_slacklake.services.ai_service.cfg.GENIE_ENABLED", True), patch(
-        "data_slacklake.services.ai_service.cfg.GENIE_SPACE_ID", "space-123"
+    with patch("data_slacklake.services.ai_service.GENIE_ENABLED", True), patch(
+        "data_slacklake.services.ai_service.GENIE_SPACE_ID", "space-123"
     ):
         from data_slacklake.services.ai_service import process_question
         resposta, sql = process_question("Qual o total?")

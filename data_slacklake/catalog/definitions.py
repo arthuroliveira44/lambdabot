@@ -7,43 +7,36 @@ from __future__ import annotations
 from textwrap import dedent
 
 
-def _stringify(value) -> str:
+def _stringify(value: object | None) -> str:
     if value is None:
         return ""
     return str(value).strip()
 
 
-def _truncate(text: str, max_chars: int) -> str:
-    t = _stringify(text)
-    if len(t) <= max_chars:
-        return t
-    return t[: max_chars - 1] + "…"
-
-
-def _cap_total(text: str, max_chars: int) -> str:
-    t = _stringify(text)
-    if len(t) <= max_chars:
-        return t
-    return t[: max_chars - 1] + "…"
+def _truncate_text(text: str, max_chars: int) -> str:
+    normalized_text = _stringify(text)
+    if len(normalized_text) <= max_chars:
+        return normalized_text
+    return normalized_text[: max_chars - 1] + "…"
 
 
 def _cap_bullets(
-    items,
+    items: list[object] | None,
     *,
     max_items: int,
     max_chars_per_item: int,
     max_total_chars: int,
 ) -> str:
-    out = []
-    total = 0
-    for raw in (items or [])[:max_items]:
-        s = _truncate(_stringify(raw), max_chars_per_item)
-        line = f"- {s}" if s else "- (vazio)"
-        if total + len(line) + 1 > max_total_chars:
+    bullet_lines: list[str] = []
+    total_chars = 0
+    for raw_item in (items or [])[:max_items]:
+        item_text = _truncate_text(_stringify(raw_item), max_chars_per_item)
+        bullet_line = f"- {item_text}" if item_text else "- (vazio)"
+        if total_chars + len(bullet_line) + 1 > max_total_chars:
             break
-        out.append(line)
-        total += len(line) + 1
-    return "\n".join(out).strip()
+        bullet_lines.append(bullet_line)
+        total_chars += len(bullet_line) + 1
+    return "\n".join(bullet_lines).strip()
 
 
 def _build_router_doc(entry: dict) -> str:
@@ -54,18 +47,18 @@ def _build_router_doc(entry: dict) -> str:
     tags = entry.get("tags") or []
     medidas = entry.get("medidas") or []
 
-    medidas_txt = ", ".join([_truncate(_stringify(m), 80) for m in medidas[:6] if _stringify(m)])
-    tags_txt = ", ".join([_truncate(_stringify(t), 40) for t in tags[:12] if _stringify(t)])
+    medidas_txt = ", ".join([_truncate_text(_stringify(item), 80) for item in medidas[:6] if _stringify(item)])
+    tags_txt = ", ".join([_truncate_text(_stringify(tag), 40) for tag in tags[:12] if _stringify(tag)])
     parts = [
         f"ID: {_stringify(entry.get('id'))}",
-        f"Descrição: {_truncate(entry.get('descricao_curta') or entry.get('descricao') or '', 240)}",
+        f"Descrição: {_truncate_text(entry.get('descricao_curta') or entry.get('descricao') or '', 240)}",
         f"Tabela: {_stringify(entry.get('tabela') or '')}",
-        f"Grão: {_truncate(entry.get('grao') or '', 180)}",
+        f"Grão: {_truncate_text(entry.get('grao') or '', 180)}",
         f"Tempo: {_stringify(entry.get('tempo_coluna') or '')}",
         f"Medidas: {medidas_txt}" if medidas_txt else "",
         f"Tags: {tags_txt}" if tags_txt else "",
     ]
-    return _cap_total("\n".join([p for p in parts if p]).strip(), 1200)
+    return _truncate_text("\n".join([part for part in parts if part]).strip(), 1200)
 
 
 def _build_sql_context(entry: dict) -> str:
@@ -85,7 +78,7 @@ def _build_sql_context(entry: dict) -> str:
         f"""
         Você é um analista de dados. Use APENAS a tabela `{_stringify(entry.get('tabela'))}`.
 
-        Grão (granularidade): {_truncate(entry.get('grao') or '', 220)}
+        Grão (granularidade): {_truncate_text(entry.get('grao') or '', 220)}
         Coluna de tempo principal: {_stringify(entry.get('tempo_coluna') or '')}
 
         Medidas/Métricas (como filtrar/usar):
@@ -98,7 +91,7 @@ def _build_sql_context(entry: dict) -> str:
         {regras_txt if regras_txt else "- (não especificado)"}
         """
     ).strip()
-    return _cap_total(ctx, 5000)
+    return _truncate_text(ctx, 5000)
 
 
 def _make_entry(**kwargs) -> dict:
