@@ -1,6 +1,9 @@
 """
 Data Access Object (DAO) layer responsible for executing queries against Databricks SQL.
 """
+from __future__ import annotations
+
+from typing import Any
 
 from databricks import sql
 
@@ -12,20 +15,20 @@ from data_slacklake.config import (
 )
 
 
-def execute_query(query):
-    """Connect to Databricks and run the SQL"""
+def execute_query(query: str) -> tuple[list[str], list[Any]]:
+    """Executa SQL no Databricks e retorna colunas + linhas."""
     try:
         with sql.connect(
             server_hostname=DATABRICKS_HOST,
             http_path=DATABRICKS_HTTP_PATH,
-            access_token=DATABRICKS_TOKEN
+            access_token=DATABRICKS_TOKEN,
         ) as connection:
             with connection.cursor() as cursor:
-                logger.info(f"Executando SQL: {query}")
+                logger.info("Executando SQL: %s", query)
                 cursor.execute(query)
-                result = cursor.fetchall()
-                colunas = [desc[0] for desc in cursor.description]
-                return colunas, result
-    except Exception as e:
-        logger.error(f"Erro Databricks SQL: {e}")
-        raise e
+                rows = cursor.fetchall()
+                column_names = [description[0] for description in cursor.description]
+                return column_names, rows
+    except Exception as exc:
+        logger.error("Erro Databricks SQL: %s", exc)
+        raise
