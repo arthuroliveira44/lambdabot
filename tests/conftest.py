@@ -7,29 +7,36 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+BASE_ENV_VARS = {
+    "app_env": "test",
+    "SLACK_BOT_TOKEN": "xoxb-test-token",
+    "SLACK_SIGNING_SECRET": "test-secret",
+    "DATABRICKS_TOKEN": "test-db-token",
+    "DATABRICKS_HOST": "test.databricks.com",
+    "DATABRICKS_HTTP_PATH": "/sql/1.0/endpoints/test",
+}
+
+TRACING_ENV_VARS = {
+    "LANGCHAIN_TRACING_V2": "false",
+    "LANGCHAIN_TRACING": "false",
+    "LANGSMITH_TRACING": "false",
+}
+
+for env_name, env_value in {**BASE_ENV_VARS, **TRACING_ENV_VARS}.items():
+    os.environ.setdefault(env_name, env_value)
+
 os.environ.setdefault("GENIE_ENABLED", "false")
 os.environ.pop("GENIE_SPACE_ID", None)
 os.environ.pop("GENIE_SPACE_MAP", None)
 
-os.environ.setdefault("app_env", "test")
-os.environ.setdefault("SLACK_BOT_TOKEN", "xoxb-test-token")
-os.environ.setdefault("SLACK_SIGNING_SECRET", "test-secret")
-os.environ.setdefault("DATABRICKS_TOKEN", "test-db-token")
-os.environ.setdefault("DATABRICKS_HOST", "test.databricks.com")
-os.environ.setdefault("DATABRICKS_HTTP_PATH", "/sql/1.0/endpoints/test")
-
-os.environ.setdefault("LANGCHAIN_TRACING_V2", "false")
-os.environ.setdefault("LANGCHAIN_TRACING", "false")
-os.environ.setdefault("LANGSMITH_TRACING", "false")
-
-mock_ssm_client = MagicMock()
-mock_ssm_client.get_parameter.return_value = {
+mocked_ssm_client = MagicMock()
+mocked_ssm_client.get_parameter.return_value = {
     "Parameter": {
-        "Value": "dummy_secret_value_for_testing"
+        "Value": "dummy_secret_value_for_testing",
     }
 }
 
-patcher_boto = patch("boto3.client", return_value=mock_ssm_client)
+patcher_boto = patch("boto3.client", return_value=mocked_ssm_client)
 patcher_boto.start()
 
 try:
@@ -56,7 +63,6 @@ patcher_slack = patch("slack_sdk.web.client.WebClient.auth_test", return_value=m
 patcher_slack.start()
 
 
-
 @pytest.fixture(scope="session", autouse=True)
 def stop_global_patches():
     """
@@ -71,12 +77,8 @@ def mock_env_vars(monkeypatch):
     """
     Define variáveis de ambiente obrigatórias.
     """
-    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test-token")
-    monkeypatch.setenv("SLACK_SIGNING_SECRET", "test-secret")
-    monkeypatch.setenv("DATABRICKS_TOKEN", "test-db-token")
-    monkeypatch.setenv("app_env", "test")
-    monkeypatch.setenv("DATABRICKS_HOST", "test.databricks.com")
-    monkeypatch.setenv("DATABRICKS_HTTP_PATH", "/sql/1.0/endpoints/test")
+    for env_name, env_value in BASE_ENV_VARS.items():
+        monkeypatch.setenv(env_name, env_value)
 
 
 @pytest.fixture(autouse=True)
