@@ -23,6 +23,16 @@ app = App(
 slack_handler = SlackRequestHandler(app)
 
 
+def _build_conversation_key(event: dict) -> str:
+    """
+    Gera chave estável por thread/usuário para memória conversacional.
+    """
+    channel = event.get("channel", "unknown-channel")
+    thread_ts = event.get("thread_ts") or event.get("ts") or "no-thread"
+    user = event.get("user", "unknown-user")
+    return f"slack:{channel}:{thread_ts}:{user}"
+
+
 @app.event("app_mention")
 def handle_app_mentions(body, say):
     """
@@ -48,7 +58,8 @@ def handle_app_mentions(body, say):
 
     try:
         from data_slacklake.services.ai_service import process_question
-        resposta, sql_debug = process_question(pergunta)
+        conversation_key = _build_conversation_key(event)
+        resposta, sql_debug = process_question(pergunta, conversation_key=conversation_key)
         say(resposta, thread_ts=thread_ts)
         if sql_debug:
             say(f"*Debug SQL:* ```{sql_debug}```", thread_ts=thread_ts)

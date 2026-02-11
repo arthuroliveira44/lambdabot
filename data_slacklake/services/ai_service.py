@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from functools import lru_cache
+from threading import Lock
 
 import data_slacklake.config as cfg
 from data_slacklake.config import LLM_ENDPOINT
@@ -31,6 +33,123 @@ _FORBIDDEN_SQL_RE = re.compile(
     r"\b(drop|delete|insert|update|merge|alter|create|replace|truncate|grant|revoke|call)\b",
     re.IGNORECASE,
 )
+
+_CONVERSATION_TTL_SECONDS = 60 * 60
+_CONVERSATION_MAX_MESSAGES = 12
+_CONVERSATION_CONTEXT_MAX_CHARS = 3500
+_CONVERSATION_STATE: dict[str, dict] = {}
+_CONVERSATION_LOCK = Lock()
+
+
+def _prune_expired_conversations(now_ts: float) -> None:
+    expiration_limit = now_ts - _CONVERSATION_TTL_SECONDS
+    expired_keys = [
+        key
+        for key, value in _CONVERSATION_STATE.items()
+        if value.get("updated_at", 0.0) < expiration_limit
+    ]
+    for key in expired_keys:
+        _CONVERSATION_STATE.pop(key, None)
+
+
+def _get_or_create_conversation_state(conversation_key: str, now_ts: float) -> dict:
+    state = _CONVERSATION_STATE.get(conversation_key)
+    if state is None:
+        state = {
+            "messages": [],
+            "genie_conversation_ids": {},
+            "updated_at": now_ts,
+        }
+        _CONVERSATION_STATE[conversation_key] = state
+    else:
+        state["updated_at"] = now_ts
+    return state
+
+
+def _get_recent_messages(conversation_key: str | None) -> list[dict]:
+    if not conversation_key:
+        return []
+
+    now_ts = time.time()
+    with _CONVERSATION_LOCK:
+        _prune_expired_conversations(now_ts)
+        state = _CONVERSATION_STATE.get(conversation_key)
+        if not state:
+            return []
+
+        state["updated_at"] = now_ts
+        messages = state.get("messages") or []
+        return [dict(m) for m in messages[-_CONVERSATION_MAX_MESSAGES:]]
+
+
+def _build_contextual_question(pergunta: str, conversation_key: str | None) -> str:
+    recent_messages = _get_recent_messages(conversation_key)
+    if not recent_messages:
+        return pergunta
+
+    lines = [
+        "Contexto recente da conversa (use para resolver referências do tipo 'isso', 'o mesmo período', 'essa métrica'):"
+    ]
+    for msg in recent_messages:
+        role = "Usuário" if msg.get("role") == "user" else "Assistente"
+        content = (msg.get("content") or "").strip()
+        if content:
+            lines.append(f"{role}: {content}")
+
+    lines.append(f"Pergunta atual do usuário: {pergunta}")
+    contextualized = "\n".join(lines).strip()
+
+    if len(contextualized) > _CONVERSATION_CONTEXT_MAX_CHARS:
+        contextualized = contextualized[-_CONVERSATION_CONTEXT_MAX_CHARS:]
+    return contextualized
+
+
+def _append_turn(conversation_key: str | None, pergunta: str, resposta: str) -> None:
+    if not conversation_key:
+        return
+
+    now_ts = time.time()
+    with _CONVERSATION_LOCK:
+        _prune_expired_conversations(now_ts)
+        state = _get_or_create_conversation_state(conversation_key, now_ts)
+        messages = state.setdefault("messages", [])
+        messages.extend(
+            [
+                {"role": "user", "content": (pergunta or "").strip()},
+                {"role": "assistant", "content": (resposta or "").strip()},
+            ]
+        )
+        if len(messages) > _CONVERSATION_MAX_MESSAGES:
+            state["messages"] = messages[-_CONVERSATION_MAX_MESSAGES:]
+
+
+def _get_genie_conversation_id(conversation_key: str | None, space_id: str) -> str | None:
+    if not (conversation_key and space_id):
+        return None
+
+    now_ts = time.time()
+    with _CONVERSATION_LOCK:
+        _prune_expired_conversations(now_ts)
+        state = _CONVERSATION_STATE.get(conversation_key)
+        if not state:
+            return None
+
+        state["updated_at"] = now_ts
+        conversation_ids = state.get("genie_conversation_ids") or {}
+        conversation_id = conversation_ids.get(space_id)
+        return str(conversation_id).strip() if conversation_id else None
+
+
+def _set_genie_conversation_id(conversation_key: str | None, space_id: str, conversation_id: str | None) -> None:
+    if not (conversation_key and space_id and conversation_id):
+        return
+
+    now_ts = time.time()
+    with _CONVERSATION_LOCK:
+        _prune_expired_conversations(now_ts)
+        state = _get_or_create_conversation_state(conversation_key, now_ts)
+        conversation_ids = state.setdefault("genie_conversation_ids", {})
+        conversation_ids[space_id] = conversation_id
 
 
 def _normalize_sql(sql_query: str) -> str:
@@ -167,23 +286,33 @@ def _get_genie_space_id(tabela_info: dict) -> str | None:
     return str(space_id).strip() if space_id else None
 
 
-def process_question(pergunta):
+def process_question(pergunta: str, conversation_key: str | None = None):
     """Fluxo: Router -> SQL -> DB -> Resposta"""
-    tabela_info = identify_table(pergunta)
+    pergunta_contextualizada = _build_contextual_question(pergunta, conversation_key)
+
+    tabela_info = identify_table(pergunta_contextualizada)
     if not tabela_info:
         return "Desculpe, não consegui processar sua pergunta.", None
 
     space_id = _get_genie_space_id(tabela_info)
     if space_id:
         try:
-            resposta, sql_debug, _conversation_id = ask_genie(space_id=space_id, pergunta=pergunta)
+            genie_conversation_id = _get_genie_conversation_id(conversation_key, space_id)
+            pergunta_genie = pergunta if genie_conversation_id else pergunta_contextualizada
+            resposta, sql_debug, new_conversation_id = ask_genie(
+                space_id=space_id,
+                pergunta=pergunta_genie,
+                conversation_id=genie_conversation_id,
+            )
+            _set_genie_conversation_id(conversation_key, space_id, new_conversation_id)
+            _append_turn(conversation_key, pergunta, resposta)
             return resposta, sql_debug
         except Exception as e:
             return f"Falha ao consultar Genie (fallback para SQL): {str(e)}", None
 
     llm = get_llm()
 
-    sql_query_raw = _generate_sql(pergunta, tabela_info, llm)
+    sql_query_raw = _generate_sql(pergunta_contextualizada, tabela_info, llm)
 
     try:
         sql_query = _apply_sql_guardrails(sql_query_raw)
@@ -195,5 +324,6 @@ def process_question(pergunta):
     except Exception as e:
         return f"Erro ao executar a query: {str(e)}", sql_query
 
-    resposta_final = _interpret(pergunta, colunas, dados, llm)
+    resposta_final = _interpret(pergunta_contextualizada, colunas, dados, llm)
+    _append_turn(conversation_key, pergunta, resposta_final)
     return resposta_final, sql_query
