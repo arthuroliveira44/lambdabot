@@ -35,6 +35,23 @@ def _build_conversation_key(event_payload: dict[str, Any]) -> str:
     return f"slack:{channel_id}:{thread_ts}:{user_id}"
 
 
+def _build_genie_usage_message() -> str:
+    # Import tardio para evitar custo de import no cold start antes de uso real.
+    from data_slacklake.services.ai_service import list_configured_genie_commands
+
+    commands = list_configured_genie_commands()
+    if commands:
+        commands_text = ", ".join(commands)
+        first_command = commands[0]
+        return (
+            "Me envie uma pergunta para consultar a Genie.\n"
+            f"Comandos configurados: {commands_text}\n"
+            f"Exemplo: `{first_command} quanto operações tivemos esse ano?`"
+        )
+
+    return "Me envie uma pergunta para consultar a Genie. Exemplo: `quanto operações tivemos esse ano?`"
+
+
 def _lowercase_headers(raw_headers: dict[str, Any] | None) -> dict[str, str]:
     if not raw_headers:
         return {}
@@ -100,11 +117,12 @@ def handle_app_mentions(body: dict[str, Any], say: Callable[..., Any]) -> None:
     user_question = _extract_question_from_mention(message_text)
 
     if not user_question:
-        say(f"Olá <@{user_id}>! Como posso ajudar?", thread_ts=thread_ts)
+        usage_message = _build_genie_usage_message()
+        say(f"Olá <@{user_id}>! {usage_message}", thread_ts=thread_ts)
         return
 
     logger.info("Pergunta de %s: %s", user_id, user_question)
-    say(f"Olá <@{user_id}>! Processando sua pergunta: *'{user_question}'*...", thread_ts=thread_ts)
+    say(f"Olá <@{user_id}>! Consultando a Genie...", thread_ts=thread_ts)
 
     try:
         from data_slacklake.services.ai_service import process_question
