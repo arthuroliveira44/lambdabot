@@ -25,6 +25,16 @@ def _extract_question_from_mention(message_text: str) -> str:
     return message_text.strip()
 
 
+def _build_conversation_key(event_payload: dict[str, Any]) -> str:
+    """
+    Gera uma chave estável por canal/thread/usuário para memória conversacional.
+    """
+    channel_id = event_payload.get("channel", "unknown-channel")
+    thread_ts = event_payload.get("thread_ts") or event_payload.get("ts") or "no-thread"
+    user_id = event_payload.get("user", "unknown-user")
+    return f"slack:{channel_id}:{thread_ts}:{user_id}"
+
+
 def _lowercase_headers(raw_headers: dict[str, Any] | None) -> dict[str, str]:
     if not raw_headers:
         return {}
@@ -99,7 +109,8 @@ def handle_app_mentions(body: dict[str, Any], say: Callable[..., Any]) -> None:
     try:
         from data_slacklake.services.ai_service import process_question
 
-        answer_text, sql_debug = process_question(user_question)
+        conversation_key = _build_conversation_key(event_payload)
+        answer_text, sql_debug = process_question(user_question, conversation_key=conversation_key)
         say(answer_text, thread_ts=thread_ts)
         if sql_debug:
             say(f"*Debug SQL:* ```{sql_debug}```", thread_ts=thread_ts)
