@@ -328,49 +328,38 @@ def _ask_genie_or_capture_error(
         return None, None, f"{failure_message}: {str(exc)}", None
 
 
-def process_question(pergunta: str, conversation_key: str | None = None) -> tuple[str, str | None]:
-    """Fluxo: Router -> SQL -> DB -> Resposta"""
-    contextual_question = _build_contextual_question(pergunta, conversation_key)
+def _process_with_genie(
+    *,
+    question: str,
+    contextual_question: str,
+    conversation_key: str | None,
+    space_id: str,
+    failure_message: str,
+) -> tuple[str, str | None]:
+    genie_conversation_id = _get_genie_conversation_id(conversation_key, space_id)
+    genie_question = question if genie_conversation_id else contextual_question
+    genie_answer, genie_sql_debug, genie_error, updated_conversation_id = _ask_genie_or_capture_error(
+        space_id=space_id,
+        question=genie_question,
+        failure_message=failure_message,
+        conversation_id=genie_conversation_id,
+    )
+    _set_genie_conversation_id(conversation_key, space_id, updated_conversation_id)
+    answer_text = genie_answer or genie_error or "Falha ao consultar Genie."
+    if genie_answer is not None:
+        _append_turn(conversation_key, question, answer_text)
+    sql_debug = genie_sql_debug if genie_answer is not None else None
+    return answer_text, sql_debug
 
-    if GENIE_ENABLED and GENIE_SPACE_ID:
-        genie_conversation_id = _get_genie_conversation_id(conversation_key, GENIE_SPACE_ID)
-        genie_question = pergunta if genie_conversation_id else contextual_question
-        genie_answer, genie_sql_debug, genie_error, updated_conversation_id = _ask_genie_or_capture_error(
-            space_id=GENIE_SPACE_ID,
-            question=genie_question,
-            failure_message="Falha ao consultar Genie",
-            conversation_id=genie_conversation_id,
-        )
-        _set_genie_conversation_id(conversation_key, GENIE_SPACE_ID, updated_conversation_id)
-        answer_text = genie_answer or genie_error or "Falha ao consultar Genie."
-        if genie_answer is not None:
-            _append_turn(conversation_key, pergunta, answer_text)
-        sql_debug = genie_sql_debug if genie_answer is not None else None
-        return answer_text, sql_debug
 
-    table_metadata = identify_table(contextual_question)
-    if not table_metadata:
-        return "Desculpe, não consegui processar sua pergunta.", None
-
-    context_space_id = _get_genie_space_id(table_metadata)
-    if context_space_id:
-        genie_conversation_id = _get_genie_conversation_id(conversation_key, context_space_id)
-        genie_question = pergunta if genie_conversation_id else contextual_question
-        genie_answer, genie_sql_debug, genie_error, updated_conversation_id = _ask_genie_or_capture_error(
-            space_id=context_space_id,
-            question=genie_question,
-            failure_message="Falha ao consultar Genie (fallback para SQL)",
-            conversation_id=genie_conversation_id,
-        )
-        _set_genie_conversation_id(conversation_key, context_space_id, updated_conversation_id)
-        answer_text = genie_answer or genie_error or "Falha ao consultar Genie."
-        if genie_answer is not None:
-            _append_turn(conversation_key, pergunta, answer_text)
-        sql_debug = genie_sql_debug if genie_answer is not None else None
-        return answer_text, sql_debug
-
+def _process_with_sql(
+    *,
+    question: str,
+    contextual_question: str,
+    conversation_key: str | None,
+    table_metadata: dict[str, Any],
+) -> tuple[str, str | None]:
     llm = get_llm()
-
     raw_sql_query = _generate_sql(contextual_question, table_metadata, llm)
 
     try:
@@ -384,5 +373,40 @@ def process_question(pergunta: str, conversation_key: str | None = None) -> tupl
         return f"Erro ao executar a query: {str(exc)}", safe_sql_query
 
     final_answer = _interpret(contextual_question, result_columns, result_rows, llm)
-    _append_turn(conversation_key, pergunta, final_answer)
+    _append_turn(conversation_key, question, final_answer)
     return final_answer, safe_sql_query
+
+
+def process_question(pergunta: str, conversation_key: str | None = None) -> tuple[str, str | None]:
+    """Fluxo: Router -> SQL -> DB -> Resposta"""
+    contextual_question = _build_contextual_question(pergunta, conversation_key)
+
+    if GENIE_ENABLED and GENIE_SPACE_ID:
+        return _process_with_genie(
+            question=pergunta,
+            contextual_question=contextual_question,
+            conversation_key=conversation_key,
+            space_id=GENIE_SPACE_ID,
+            failure_message="Falha ao consultar Genie",
+        )
+
+    table_metadata = identify_table(contextual_question)
+    if not table_metadata:
+        return "Desculpe, não consegui processar sua pergunta.", None
+
+    context_space_id = _get_genie_space_id(table_metadata)
+    if context_space_id:
+        return _process_with_genie(
+            question=pergunta,
+            contextual_question=contextual_question,
+            conversation_key=conversation_key,
+            space_id=context_space_id,
+            failure_message="Falha ao consultar Genie (fallback para SQL)",
+        )
+
+    return _process_with_sql(
+        question=pergunta,
+        contextual_question=contextual_question,
+        conversation_key=conversation_key,
+        table_metadata=table_metadata,
+    )
