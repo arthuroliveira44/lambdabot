@@ -7,8 +7,12 @@ import json
 import re
 from functools import lru_cache
 
-import data_slacklake.config as cfg
-from data_slacklake.config import LLM_ENDPOINT
+from data_slacklake.config import (
+    GENIE_ENABLED,
+    GENIE_SPACE_ID,
+    GENIE_SPACE_MAP,
+    LLM_ENDPOINT,
+)
 from data_slacklake.prompts import INTERPRET_TEMPLATE, SQL_GEN_TEMPLATE
 from data_slacklake.services.db_service import execute_query
 from data_slacklake.services.genie_service import ask_genie
@@ -144,17 +148,17 @@ def _get_genie_space_id(tabela_info: dict) -> str | None:
     2) config GENIE_SPACE_ID (Space global para todos os contextos)
     3) config/env GENIE_SPACE_MAP (JSON: {"context_id": "space_id"}) (fallback legado)
     """
-    if not cfg.GENIE_ENABLED:
+    if not GENIE_ENABLED:
         return None
 
     if tabela_info.get("genie_space_id"):
         return str(tabela_info["genie_space_id"]).strip() or None
 
-    if cfg.GENIE_SPACE_ID:
-        return cfg.GENIE_SPACE_ID
+    if GENIE_SPACE_ID:
+        return GENIE_SPACE_ID
 
     ctx_id = tabela_info.get("id")
-    raw = cfg.GENIE_SPACE_MAP
+    raw = GENIE_SPACE_MAP
     if not (raw and ctx_id):
         return None
 
@@ -169,6 +173,15 @@ def _get_genie_space_id(tabela_info: dict) -> str | None:
 
 def process_question(pergunta):
     """Fluxo: Router -> SQL -> DB -> Resposta"""
+    # pylint: disable=too-many-return-statements
+
+    if GENIE_ENABLED and GENIE_SPACE_ID:
+        try:
+            resposta, sql_debug, _conversation_id = ask_genie(space_id=GENIE_SPACE_ID, pergunta=pergunta)
+            return resposta, sql_debug
+        except Exception as e:
+            return f"Falha ao consultar Genie: {str(e)}", None
+
     tabela_info = identify_table(pergunta)
     if not tabela_info:
         return "Desculpe, não consegui processar sua pergunta.", None

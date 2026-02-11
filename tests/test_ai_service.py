@@ -118,8 +118,8 @@ def test_genie_flow(mock_identify, mock_ask_genie):
     mock_identify.return_value = {"id": "kpi_weekly", "contexto": "CTX"}
     mock_ask_genie.return_value = ("Resposta Genie", "SELECT 1", "conv-1")
 
-    with patch("data_slacklake.services.ai_service.cfg.GENIE_ENABLED", True), patch(
-        "data_slacklake.services.ai_service.cfg.GENIE_SPACE_ID", "space-123"
+    with patch("data_slacklake.services.ai_service.GENIE_ENABLED", True), patch(
+        "data_slacklake.services.ai_service.GENIE_SPACE_ID", "space-123"
     ):
         from data_slacklake.services.ai_service import process_question
         resposta, sql = process_question("Qual o total?")
