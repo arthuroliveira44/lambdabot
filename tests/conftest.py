@@ -77,8 +77,8 @@ def mock_env_vars(monkeypatch):
     """
     Define variáveis de ambiente obrigatórias.
     """
-    for env_name, env_value in BASE_ENV_VARS.items():
-        monkeypatch.setenv(env_name, env_value)
+    for base_env_name, base_env_value in BASE_ENV_VARS.items():
+        monkeypatch.setenv(base_env_name, base_env_value)
 
 
 @pytest.fixture(autouse=True)

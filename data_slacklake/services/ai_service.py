@@ -175,19 +175,17 @@ def _get_genie_space_id(table_metadata: dict[str, Any]) -> str | None:
 
     context_identifier = table_metadata.get("id")
     raw_mapping = GENIE_SPACE_MAP
-    if not (raw_mapping and context_identifier):
-        return None
+    if raw_mapping and context_identifier:
+        try:
+            parsed_mapping = json.loads(raw_mapping)
+        except Exception:
+            parsed_mapping = None
 
-    try:
-        parsed_mapping = json.loads(raw_mapping)
-    except Exception:
-        return None
+        if isinstance(parsed_mapping, dict):
+            space_id = parsed_mapping.get(context_identifier)
+            return str(space_id).strip() if space_id else None
 
-    if not isinstance(parsed_mapping, dict):
-        return None
-
-    space_id = parsed_mapping.get(context_identifier)
-    return str(space_id).strip() if space_id else None
+    return None
 
 
 def _ask_genie_or_capture_error(
@@ -206,7 +204,6 @@ def _ask_genie_or_capture_error(
 
 def process_question(pergunta: str) -> tuple[str, str | None]:
     """Fluxo: Router -> SQL -> DB -> Resposta"""
-    # pylint: disable=too-many-return-statements
 
     if GENIE_ENABLED and GENIE_SPACE_ID:
         genie_answer, genie_sql_debug, genie_error = _ask_genie_or_capture_error(
@@ -214,9 +211,9 @@ def process_question(pergunta: str) -> tuple[str, str | None]:
             question=pergunta,
             failure_message="Falha ao consultar Genie",
         )
-        if genie_answer is not None:
-            return genie_answer, genie_sql_debug
-        return genie_error or "Falha ao consultar Genie.", None
+        answer_text = genie_answer or genie_error or "Falha ao consultar Genie."
+        sql_debug = genie_sql_debug if genie_answer is not None else None
+        return answer_text, sql_debug
 
     table_metadata = identify_table(pergunta)
     if not table_metadata:
@@ -229,9 +226,9 @@ def process_question(pergunta: str) -> tuple[str, str | None]:
             question=pergunta,
             failure_message="Falha ao consultar Genie (fallback para SQL)",
         )
-        if genie_answer is not None:
-            return genie_answer, genie_sql_debug
-        return genie_error or "Falha ao consultar Genie.", None
+        answer_text = genie_answer or genie_error or "Falha ao consultar Genie."
+        sql_debug = genie_sql_debug if genie_answer is not None else None
+        return answer_text, sql_debug
 
     llm = get_llm()
 
