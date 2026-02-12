@@ -9,6 +9,7 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def clear_conversation_state():
+    """Limpa estado global de conversa entre testes."""
     from data_slacklake.services import ai_service
 
     ai_service._CONVERSATION_STATE.clear()  # pylint: disable=protected-access
@@ -18,6 +19,7 @@ def clear_conversation_state():
 
 @patch("data_slacklake.services.ai_service.ask_genie")
 def test_process_question_uses_default_genie_space(mock_ask_genie):
+    """Usa GENIE_SPACE_ID quando não há alias no início da pergunta."""
     mock_ask_genie.return_value = ("Resposta Genie", "SELECT 1", "conv-1")
 
     with patch("data_slacklake.services.ai_service.GENIE_SPACE_ID", "space-default"), patch(
@@ -34,6 +36,7 @@ def test_process_question_uses_default_genie_space(mock_ask_genie):
 
 @patch("data_slacklake.services.ai_service.ask_genie")
 def test_process_question_routes_by_alias(mock_ask_genie):
+    """Seleciona o space correto quando pergunta começa com !alias."""
     mock_ask_genie.return_value = ("Resposta Remessa", None, "conv-remessa")
 
     with patch("data_slacklake.services.ai_service.GENIE_SPACE_ID", "space-default"), patch(
@@ -55,6 +58,7 @@ def test_process_question_routes_by_alias(mock_ask_genie):
 
 @patch("data_slacklake.services.ai_service.ask_genie")
 def test_process_question_unknown_alias_returns_help(mock_ask_genie):
+    """Retorna mensagem orientativa quando alias solicitado não existe."""
     with patch("data_slacklake.services.ai_service.GENIE_SPACE_ID", ""), patch(
         "data_slacklake.services.ai_service.GENIE_BOT_SPACE_MAP",
         '{"!remessagpt":"space-remessa","!marketing":"space-mkt"}',
@@ -72,6 +76,7 @@ def test_process_question_unknown_alias_returns_help(mock_ask_genie):
 
 @patch("data_slacklake.services.ai_service.ask_genie")
 def test_process_question_requires_alias_without_default_space(mock_ask_genie):
+    """Exige !alias quando não existe Genie padrão definida."""
     with patch("data_slacklake.services.ai_service.GENIE_SPACE_ID", ""), patch(
         "data_slacklake.services.ai_service.GENIE_BOT_SPACE_MAP",
         '{"!remessagpt":"space-remessa","!marketing":"space-mkt"}',
@@ -88,6 +93,7 @@ def test_process_question_requires_alias_without_default_space(mock_ask_genie):
 
 @patch("data_slacklake.services.ai_service.ask_genie")
 def test_genie_reuses_conversation_id_across_turns_same_space(mock_ask_genie):
+    """Reaproveita conversation_id no segundo turno para o mesmo space."""
     mock_ask_genie.side_effect = [
         ("Resposta 1", "SELECT 1", "conv-1"),
         ("Resposta 2", "SELECT 2", "conv-1"),
@@ -112,6 +118,7 @@ def test_genie_reuses_conversation_id_across_turns_same_space(mock_ask_genie):
 
 @patch("data_slacklake.services.ai_service.ask_genie")
 def test_genie_conversation_id_is_isolated_per_space(mock_ask_genie):
+    """Mantém conversation_id separado por space dentro da mesma thread."""
     mock_ask_genie.side_effect = [
         ("Resp Remessa 1", None, "conv-remessa"),
         ("Resp Marketing 1", None, "conv-marketing"),
@@ -143,6 +150,7 @@ def test_genie_conversation_id_is_isolated_per_space(mock_ask_genie):
 
 @patch("data_slacklake.services.ai_service.process_question")
 def test_app_mention_success(mock_process):
+    """Responde no Slack com mensagem inicial e resposta final da IA."""
     mock_process.return_value = ("Resposta Final da IA", "SELECT * FROM debug")
 
     mock_say = MagicMock()
@@ -170,6 +178,7 @@ def test_app_mention_success(mock_process):
 
 @patch("data_slacklake.services.ai_service.process_question")
 def test_app_mention_error(mock_process):
+    """Notifica erro crítico quando processamento levanta exceção."""
     mock_process.side_effect = Exception("Erro Catastrófico")
 
     mock_say = MagicMock()
@@ -185,6 +194,7 @@ def test_app_mention_error(mock_process):
 
 @patch("data_slacklake.services.ai_service.list_configured_genie_commands", return_value=["!remessagpt", "!marketing"])
 def test_app_mention_without_question_shows_usage(_mock_commands):
+    """Mostra instruções e comandos quando menção vem sem pergunta."""
     mock_say = MagicMock()
     body = {
         "event": {

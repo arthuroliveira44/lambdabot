@@ -126,6 +126,8 @@ def _format_available_aliases(alias_map: dict[str, str]) -> str:
 def _resolve_genie_target(question: str) -> tuple[str | None, str | None, str | None]:
     alias_map = _parse_genie_bot_map(GENIE_BOT_SPACE_MAP)
     alias, clean_question = _extract_alias_and_question(question)
+    selected_space_id: str | None = None
+    error_message: str | None = None
 
     if alias:
         normalized_alias = _normalize_alias(alias)
@@ -133,16 +135,9 @@ def _resolve_genie_target(question: str) -> tuple[str | None, str | None, str | 
         if not selected_space_id:
             available_aliases = _format_available_aliases(alias_map)
             if available_aliases:
-                return (
-                    None,
-                    None,
-                    f"Não encontrei a Genie `{alias}`. Use um dos comandos: {available_aliases}.",
-                )
-            return (
-                None,
-                None,
-                "Não encontrei a Genie solicitada e nenhum alias foi configurado no ambiente.",
-            )
+                error_message = f"Não encontrei a Genie `{alias}`. Use um dos comandos: {available_aliases}."
+            else:
+                error_message = "Não encontrei a Genie solicitada e nenhum alias foi configurado no ambiente."
     else:
         selected_space_id = (GENIE_SPACE_ID or "").strip()
         if not selected_space_id:
@@ -150,32 +145,24 @@ def _resolve_genie_target(question: str) -> tuple[str | None, str | None, str | 
                 selected_space_id = next(iter(alias_map.values()))
             elif alias_map:
                 available_aliases = _format_available_aliases(alias_map)
-                return (
-                    None,
-                    None,
-                    f"Informe a Genie usando um comando no início da pergunta. Opções: {available_aliases}.",
+                error_message = (
+                    f"Informe a Genie usando um comando no início da pergunta. Opções: {available_aliases}."
                 )
             else:
-                return (
-                    None,
-                    None,
-                    "Nenhuma Genie configurada. Defina GENIE_SPACE_ID ou GENIE_BOT_SPACE_MAP.",
-                )
+                error_message = "Nenhuma Genie configurada. Defina GENIE_SPACE_ID ou GENIE_BOT_SPACE_MAP."
 
-    if not clean_question:
+    if not error_message and not clean_question:
         available_aliases = _format_available_aliases(alias_map)
         if available_aliases:
-            return (
-                None,
-                None,
-                f"Envie a pergunta após o comando da Genie. Exemplo: `!remessagpt qual o total de operações este ano?`",
+            error_message = (
+                "Envie a pergunta após o comando da Genie. "
+                "Exemplo: `!remessagpt qual o total de operações este ano?`"
             )
-        return (
-            None,
-            None,
-            "Envie uma pergunta para eu consultar a Genie.",
-        )
+        else:
+            error_message = "Envie uma pergunta para eu consultar a Genie."
 
+    if error_message:
+        return None, None, error_message
     return selected_space_id, clean_question, None
 
 
