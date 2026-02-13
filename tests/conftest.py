@@ -34,6 +34,10 @@ mocked_ssm_client.get_parameter.return_value = {
         "Value": "dummy_secret_value_for_testing",
     }
 }
+mocked_ssm_client.get_parameters.return_value = {
+    "Parameters": [],
+    "InvalidParameters": [],
+}
 
 patcher_boto = patch("boto3.client", return_value=mocked_ssm_client)
 patcher_boto.start()

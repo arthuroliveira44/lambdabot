@@ -212,3 +212,56 @@ def test_app_mention_without_question_shows_usage(_mock_commands):
     message = mock_say.call_args[0][0]
     assert "Comandos configurados" in message
     assert "!remessagpt" in message
+
+
+def test_build_event_log_summary_redacts_sensitive_data():
+    """Resumo de logs não deve vazar token nem assinatura."""
+    from main import _build_event_log_summary, _lowercase_headers
+
+    event = {"httpMethod": "POST", "path": "/v1/data-slacklake/bot"}
+    headers = _lowercase_headers(
+        {
+            "User-Agent": "Slackbot 1.0",
+            "X-Slack-Request-Timestamp": "1770926438",
+            "X-Slack-Signature": "v0=abc123",
+            "X-Forwarded-For": "54.91.163.226",
+        }
+    )
+    body_json = {
+        "type": "event_callback",
+        "event_id": "Ev123",
+        "team_id": "TL3PXCH4L",
+        "token": "token-ultra-secreto",
+        "event": {
+            "type": "app_mention",
+            "user": "U1",
+            "channel": "C1",
+            "text": "<@BOT> segredo",
+            "ts": "123.456",
+        },
+    }
+
+    summary = _build_event_log_summary(event, headers, body_json)
+
+    assert summary["headers"]["x-slack-signature"] == "[REDACTED]"
+    assert summary["slack_event"]["event_id"] == "Ev123"
+    assert summary["slack_event"]["event_type"] == "app_mention"
+    assert "token-ultra-secreto" not in str(summary)
+
+
+def test_is_duplicate_slack_event_detects_retries_by_event_id():
+    """Evita reprocessar o mesmo event_id mais de uma vez."""
+    from main import _PROCESSED_EVENT_IDS, _is_duplicate_slack_event
+
+    _PROCESSED_EVENT_IDS.clear()  # pylint: disable=protected-access
+    body_json = {"type": "event_callback", "event_id": "EvDup123", "event": {"type": "app_mention"}}
+
+    is_duplicate_first, event_id_first = _is_duplicate_slack_event(body_json)
+    is_duplicate_second, event_id_second = _is_duplicate_slack_event(body_json)
+
+    assert is_duplicate_first is False
+    assert event_id_first == "EvDup123"
+    assert is_duplicate_second is True
+    assert event_id_second == "EvDup123"
+
+    _PROCESSED_EVENT_IDS.clear()  # pylint: disable=protected-access

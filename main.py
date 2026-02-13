@@ -1,6 +1,8 @@
 import base64
 import json
 import logging
+import time
+from threading import Lock
 from typing import Any, Callable
 
 from slack_bolt import App
@@ -17,6 +19,29 @@ def _configure_logger() -> logging.Logger:
             configured_logger.removeHandler(existing_handler)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     return configured_logger
+
+
+PROCESSED_EVENT_TTL_SECONDS = 60 * 60
+_PROCESSED_EVENT_IDS: dict[str, float] = {}
+_PROCESSED_EVENTS_LOCK = Lock()
+_SENSITIVE_HEADERS = frozenset(
+    {
+        "authorization",
+        "cookie",
+        "set-cookie",
+        "x-slack-signature",
+        "x-forwarded-for",
+        "cf-connecting-ip",
+    }
+)
+_HEADERS_TO_LOG = (
+    "user-agent",
+    "x-amzn-trace-id",
+    "x-slack-request-timestamp",
+    "x-slack-retry-num",
+    "x-slack-retry-reason",
+    "x-slack-signature",
+)
 
 
 def _extract_question_from_mention(message_text: str) -> str:
@@ -62,6 +87,16 @@ def _ok_response() -> dict[str, Any]:
     return {"statusCode": 200, "body": "OK"}
 
 
+def _parse_json_body(body_content: str) -> dict[str, Any] | None:
+    if not body_content:
+        return None
+    try:
+        parsed_body = json.loads(body_content)
+    except json.JSONDecodeError:
+        return None
+    return parsed_body if isinstance(parsed_body, dict) else None
+
+
 def _decode_request_body(event: dict[str, Any]) -> str:
     body_content = event.get("body", "")
     is_base64_encoded = bool(event.get("isBase64Encoded", False))
@@ -74,15 +109,68 @@ def _decode_request_body(event: dict[str, Any]) -> str:
     return body_content
 
 
-def _handle_url_verification_if_present(body_content: str) -> dict[str, Any] | None:
-    if not body_content:
-        return None
+def _redact_header_value(header_name: str, header_value: str) -> str:
+    if header_name in _SENSITIVE_HEADERS:
+        return "[REDACTED]"
+    return header_value
 
-    try:
-        body_json = json.loads(body_content)
-    except json.JSONDecodeError:
-        return None
 
+def _build_event_log_summary(
+    event: dict[str, Any], headers_lower: dict[str, str], body_json: dict[str, Any] | None
+) -> dict[str, Any]:
+    event_payload = body_json.get("event", {}) if body_json else {}
+    headers_summary = {
+        header_name: _redact_header_value(header_name, headers_lower.get(header_name, ""))
+        for header_name in _HEADERS_TO_LOG
+        if header_name in headers_lower
+    }
+    return {
+        "requestContext": {"path": event.get("path"), "httpMethod": event.get("httpMethod")},
+        "headers": headers_summary,
+        "slack_event": {
+            "type": body_json.get("type") if body_json else None,
+            "event_id": body_json.get("event_id") if body_json else None,
+            "event_type": event_payload.get("type"),
+            "team_id": body_json.get("team_id") if body_json else None,
+            "channel": event_payload.get("channel"),
+            "user": event_payload.get("user"),
+            "thread_ts": event_payload.get("thread_ts") or event_payload.get("ts"),
+        },
+    }
+
+
+def _prune_processed_event_ids(now_timestamp: float) -> None:
+    expiration_limit = now_timestamp - PROCESSED_EVENT_TTL_SECONDS
+    expired_event_ids = [
+        event_id
+        for event_id, processed_at in _PROCESSED_EVENT_IDS.items()
+        if float(processed_at) < expiration_limit
+    ]
+    for event_id in expired_event_ids:
+        _PROCESSED_EVENT_IDS.pop(event_id, None)
+
+
+def _is_duplicate_slack_event(body_json: dict[str, Any] | None) -> tuple[bool, str | None]:
+    if not body_json or body_json.get("type") != "event_callback":
+        return False, None
+
+    event_id = str(body_json.get("event_id", "")).strip()
+    if not event_id:
+        return False, None
+
+    now_timestamp = time.time()
+    with _PROCESSED_EVENTS_LOCK:
+        _prune_processed_event_ids(now_timestamp)
+        if event_id in _PROCESSED_EVENT_IDS:
+            return True, event_id
+        _PROCESSED_EVENT_IDS[event_id] = now_timestamp
+
+    return False, event_id
+
+
+def _handle_url_verification_if_present(body_json: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not body_json:
+        return None
     if body_json.get("type") != "url_verification":
         return None
 
@@ -141,42 +229,72 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     """
     Entrypoint do AWS Lambda.
     """
-    del context  # Contexto não utilizado; mantido por compatibilidade da assinatura Lambda.
-
-    logger.info("EVENTO RECEBIDO: %s", json.dumps(event))
+    request_id = getattr(context, "aws_request_id", "unknown-request-id")
+    started_at = time.perf_counter()
+    response_status = 500
 
     headers = event.get("headers", {})
     headers_lower = _lowercase_headers(headers)
 
-    if "elb-healthchecker" in headers_lower.get("user-agent", ""):
-        return _ok_response()
-
-    if "x-slack-retry-num" in headers_lower:
-        logger.info("Retry do Slack detectado. Ignorando para evitar duplicidade.")
-        return _ok_response()
-
     try:
-        body_content = _decode_request_body(event)
-    except ValueError as exc:
-        logger.warning("Falha ao decodificar body da requisição: %s", exc)
-        return {"statusCode": 400, "body": str(exc)}
+        if "elb-healthchecker" in headers_lower.get("user-agent", ""):
+            response_status = 200
+            return _ok_response()
 
-    url_verification_response = _handle_url_verification_if_present(body_content)
-    if url_verification_response:
-        return url_verification_response
+        if "x-slack-retry-num" in headers_lower:
+            logger.info(
+                "Retry do Slack detectado (request_id=%s, retry_num=%s). Ignorando para evitar duplicidade.",
+                request_id,
+                headers_lower.get("x-slack-retry-num"),
+            )
+            response_status = 200
+            return _ok_response()
 
-    bolt_req = BoltRequest(
-        body=body_content,
-        query=event.get("queryStringParameters", {}),
-        headers=headers,
-    )
+        try:
+            body_content = _decode_request_body(event)
+        except ValueError as exc:
+            logger.warning("Falha ao decodificar body da requisição: %s", exc)
+            response_status = 400
+            return {"statusCode": 400, "body": str(exc)}
 
-    bolt_resp: BoltResponse = app.dispatch(bolt_req)
+        body_json = _parse_json_body(body_content)
+        logger.info(
+            "EVENTO RECEBIDO: %s",
+            json.dumps(_build_event_log_summary(event, headers_lower, body_json), ensure_ascii=False),
+        )
 
-    logger.info("STATUS DO BOLT: %s", bolt_resp.status)
+        url_verification_response = _handle_url_verification_if_present(body_json)
+        if url_verification_response:
+            response_status = int(url_verification_response.get("statusCode", 200))
+            return url_verification_response
 
-    return {
-        "statusCode": bolt_resp.status,
-        "body": bolt_resp.body,
-        "headers": bolt_resp.headers,
-    }
+        is_duplicate, event_id = _is_duplicate_slack_event(body_json)
+        if is_duplicate:
+            logger.info("event_id=%s já processado. Ignorando duplicidade.", event_id)
+            response_status = 200
+            return _ok_response()
+
+        bolt_req = BoltRequest(
+            body=body_content,
+            query=event.get("queryStringParameters", {}),
+            headers=headers,
+        )
+
+        bolt_resp: BoltResponse = app.dispatch(bolt_req)
+
+        logger.info("STATUS DO BOLT: %s", bolt_resp.status)
+
+        response_status = bolt_resp.status
+        return {
+            "statusCode": bolt_resp.status,
+            "body": bolt_resp.body,
+            "headers": bolt_resp.headers,
+        }
+    finally:
+        duration_ms = (time.perf_counter() - started_at) * 1000
+        logger.info(
+            "FIM REQUEST (request_id=%s, status=%s, duration_ms=%.2f)",
+            request_id,
+            response_status,
+            duration_ms,
+        )
