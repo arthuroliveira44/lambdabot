@@ -11,6 +11,7 @@ BASE_ENV_VARS = {
     "app_env": "test",
     "SLACK_BOT_TOKEN": "xoxb-test-token",
     "SLACK_SIGNING_SECRET": "test-secret",
+    "SLACK_WORKER_LAMBDA_NAME": "test-worker-lambda",
     "DATABRICKS_TOKEN": "test-db-token",
     "DATABRICKS_HOST": "test.databricks.com",
     "DATABRICKS_HTTP_PATH": "/sql/1.0/endpoints/test",
@@ -33,6 +34,10 @@ mocked_ssm_client.get_parameter.return_value = {
     "Parameter": {
         "Value": "dummy_secret_value_for_testing",
     }
+}
+mocked_ssm_client.get_parameters.return_value = {
+    "Parameters": [],
+    "InvalidParameters": [],
 }
 
 patcher_boto = patch("boto3.client", return_value=mocked_ssm_client)
