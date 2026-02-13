@@ -46,13 +46,13 @@ def test_process_question_routes_by_alias(mock_ask_genie):
     ):
         from data_slacklake.services.ai_service import process_question
 
-        resposta, sql = process_question("!RemessaGpt quanto operações tivemos esse ano?")
+        resposta, sql = process_question("!RemessaGpt quantas operações tivemos esse ano?")
 
     assert resposta == "Resposta Remessa"
     assert sql is None
     mock_ask_genie.assert_called_once_with(
         space_id="space-remessa",
-        pergunta="quanto operações tivemos esse ano?",
+        pergunta="quantas operações tivemos esse ano?",
         conversation_id=None,
     )
 
@@ -257,27 +257,22 @@ def test_is_duplicate_slack_event_detects_in_flight_and_processed_states():
     _SLACK_EVENT_STATES.clear()  # pylint: disable=protected-access
     body_json = {"type": "event_callback", "event_id": "EvDup123", "event": {"type": "app_mention"}}
 
-    with patch("main._DDB_DEDUP_TABLE_NAME", ""):
-        is_duplicate_first, event_id_first, duplicate_state_first, backend_first = _is_duplicate_slack_event(body_json)
-        is_duplicate_second, event_id_second, duplicate_state_second, backend_second = _is_duplicate_slack_event(body_json)
+    is_duplicate_first, event_id_first, duplicate_state_first = _is_duplicate_slack_event(body_json)
+    is_duplicate_second, event_id_second, duplicate_state_second = _is_duplicate_slack_event(body_json)
 
     assert is_duplicate_first is False
     assert event_id_first == "EvDup123"
     assert duplicate_state_first is None
-    assert backend_first == "local"
 
     assert is_duplicate_second is True
     assert event_id_second == "EvDup123"
     assert duplicate_state_second == "in_flight"
-    assert backend_second == "local"
 
-    _finalize_slack_event_processing("EvDup123", was_successful=True, dedupe_backend="local")
-    with patch("main._DDB_DEDUP_TABLE_NAME", ""):
-        is_duplicate_third, event_id_third, duplicate_state_third, backend_third = _is_duplicate_slack_event(body_json)
+    _finalize_slack_event_processing("EvDup123", was_successful=True)
+    is_duplicate_third, event_id_third, duplicate_state_third = _is_duplicate_slack_event(body_json)
     assert is_duplicate_third is True
     assert event_id_third == "EvDup123"
     assert duplicate_state_third == "processed"
-    assert backend_third == "local"
 
     _SLACK_EVENT_STATES.clear()  # pylint: disable=protected-access
 
@@ -289,25 +284,22 @@ def test_failed_processing_releases_event_id_for_new_retry():
     _SLACK_EVENT_STATES.clear()  # pylint: disable=protected-access
     body_json = {"type": "event_callback", "event_id": "EvRetry123", "event": {"type": "app_mention"}}
 
-    with patch("main._DDB_DEDUP_TABLE_NAME", ""):
-        is_duplicate_first, _, _, _ = _is_duplicate_slack_event(body_json)
+    is_duplicate_first, _, _ = _is_duplicate_slack_event(body_json)
     assert is_duplicate_first is False
 
-    _finalize_slack_event_processing("EvRetry123", was_successful=False, dedupe_backend="local")
+    _finalize_slack_event_processing("EvRetry123", was_successful=False)
 
-    with patch("main._DDB_DEDUP_TABLE_NAME", ""):
-        is_duplicate_second, event_id_second, duplicate_state_second, backend_second = _is_duplicate_slack_event(body_json)
+    is_duplicate_second, event_id_second, duplicate_state_second = _is_duplicate_slack_event(body_json)
     assert is_duplicate_second is False
     assert event_id_second == "EvRetry123"
     assert duplicate_state_second is None
-    assert backend_second == "local"
 
     _SLACK_EVENT_STATES.clear()  # pylint: disable=protected-access
 
 
 @patch("main.app.dispatch")
-def test_handler_ignores_http_timeout_retry_when_no_distributed_dedupe(mock_dispatch):
-    """Sem dedupe distribuído, retry por timeout é ignorado para evitar resposta duplicada."""
+def test_handler_ignores_http_timeout_retry(mock_dispatch):
+    """Retry por timeout é ignorado para evitar resposta duplicada."""
     from main import handler
 
     event = {
@@ -332,7 +324,7 @@ def test_handler_ignores_http_timeout_retry_when_no_distributed_dedupe(mock_disp
     }
 
     context = type("LambdaContext", (), {"aws_request_id": "req-short-circuit"})()
-    with patch("main._DDB_DEDUP_TABLE_NAME", ""), patch("main._SKIP_HTTP_TIMEOUT_RETRIES_WITHOUT_DDB", True):
+    with patch("main._SKIP_HTTP_TIMEOUT_RETRIES", True):
         response = handler(event, context)
 
     assert response["statusCode"] == 200

@@ -3,12 +3,9 @@ import json
 import logging
 import os
 import time
-from functools import lru_cache
 from threading import Lock
 from typing import Any, Callable
 
-import boto3
-from botocore.exceptions import ClientError
 from slack_bolt import App
 from slack_bolt.request import BoltRequest
 from slack_bolt.response import BoltResponse
@@ -31,14 +28,10 @@ _SLACK_EVENT_STATES: dict[str, dict[str, Any]] = {}
 _PROCESSED_EVENTS_LOCK = Lock()
 _EVENT_STATE_IN_FLIGHT = "in_flight"
 _EVENT_STATE_PROCESSED = "processed"
-_DEDUPE_BACKEND_LOCAL = "local"
-_DEDUPE_BACKEND_DDB = "dynamodb"
-_DDB_DEDUP_TABLE_NAME = os.getenv("SLACK_EVENT_DEDUP_TABLE", "").strip()
-_SKIP_HTTP_TIMEOUT_RETRIES_WITHOUT_DDB = os.getenv(
-    "SLACK_SKIP_HTTP_TIMEOUT_RETRIES_WITHOUT_DEDUP",
+_SKIP_HTTP_TIMEOUT_RETRIES = os.getenv(
+    "SLACK_SKIP_HTTP_TIMEOUT_RETRIES",
     "true",
 ).strip().lower() in {"1", "true", "yes", "on"}
-_DDB_DEDUP_RUNTIME_DISABLED = False
 _SENSITIVE_HEADERS = frozenset(
     {
         "authorization",
@@ -86,10 +79,10 @@ def _build_genie_usage_message() -> str:
         return (
             "Me envie uma pergunta para consultar a Genie.\n"
             f"Comandos configurados: {commands_text}\n"
-            f"Exemplo: `{first_command} quanto operações tivemos esse ano?`"
+            f"Exemplo: `{first_command} quantas operações tivemos esse ano?`"
         )
 
-    return "Me envie uma pergunta para consultar a Genie. Exemplo: `quanto operações tivemos esse ano?`"
+    return "Me envie uma pergunta para consultar a Genie. Exemplo: `quantas operações tivemos esse ano?`"
 
 
 def _lowercase_headers(raw_headers: dict[str, Any] | None) -> dict[str, str]:
@@ -170,134 +163,23 @@ def _prune_processed_event_ids(now_timestamp: float) -> None:
         _SLACK_EVENT_STATES.pop(event_id, None)
 
 
-def _claim_local_event_processing(event_id: str) -> tuple[bool, str | None, str]:
+def _claim_event_processing(event_id: str) -> tuple[bool, str | None]:
     now_timestamp = time.time()
     with _PROCESSED_EVENTS_LOCK:
         _prune_processed_event_ids(now_timestamp)
         state_data = _SLACK_EVENT_STATES.get(event_id) or {}
         status = str(state_data.get("status", ""))
         if status == _EVENT_STATE_PROCESSED:
-            return True, _EVENT_STATE_PROCESSED, _DEDUPE_BACKEND_LOCAL
+            return True, _EVENT_STATE_PROCESSED
         if status == _EVENT_STATE_IN_FLIGHT:
-            return True, _EVENT_STATE_IN_FLIGHT, _DEDUPE_BACKEND_LOCAL
+            return True, _EVENT_STATE_IN_FLIGHT
 
         _SLACK_EVENT_STATES[event_id] = {"status": _EVENT_STATE_IN_FLIGHT, "updated_at": now_timestamp}
-        return False, None, _DEDUPE_BACKEND_LOCAL
-
-
-def _finalize_local_event_processing(event_id: str, was_successful: bool) -> None:
-    now_timestamp = time.time()
-    with _PROCESSED_EVENTS_LOCK:
-        _prune_processed_event_ids(now_timestamp)
-        if was_successful:
-            _SLACK_EVENT_STATES[event_id] = {"status": _EVENT_STATE_PROCESSED, "updated_at": now_timestamp}
-            return
-        _SLACK_EVENT_STATES.pop(event_id, None)
-
-
-@lru_cache(maxsize=1)
-def _get_dynamodb_client():
-    return boto3.client("dynamodb")
-
-
-def _disable_dynamodb_dedupe_runtime(reason: str, exc: Exception) -> None:
-    global _DDB_DEDUP_RUNTIME_DISABLED  # pylint: disable=global-statement
-    if _DDB_DEDUP_RUNTIME_DISABLED:
-        return
-    _DDB_DEDUP_RUNTIME_DISABLED = True
-    logger.warning(
-        "Desabilitando dedupe em DynamoDB neste runtime (%s). Erro: %s",
-        reason,
-        exc,
-    )
-
-
-def _is_dynamodb_dedupe_enabled() -> bool:
-    return bool(_DDB_DEDUP_TABLE_NAME) and not _DDB_DEDUP_RUNTIME_DISABLED
-
-
-def _get_dynamodb_event_status(event_id: str) -> str | None:
-    if not _is_dynamodb_dedupe_enabled():
-        return None
-
-    try:
-        response = _get_dynamodb_client().get_item(
-            TableName=_DDB_DEDUP_TABLE_NAME,
-            Key={"event_id": {"S": event_id}},
-            ProjectionExpression="#status",
-            ExpressionAttributeNames={"#status": "status"},
-            ConsistentRead=True,
-        )
-    except Exception as exc:  # pragma: no cover - somente para cenários reais de infraestrutura
-        logger.warning("Falha ao consultar status no DynamoDB para event_id=%s: %s", event_id, exc)
-        return None
-
-    item_data = response.get("Item") or {}
-    status_data = item_data.get("status") or {}
-    return str(status_data.get("S", "")).strip() or None
-
-
-def _claim_dynamodb_event_processing(event_id: str) -> tuple[bool, str | None, str]:
-    now_timestamp = int(time.time())
-    try:
-        _get_dynamodb_client().put_item(
-            TableName=_DDB_DEDUP_TABLE_NAME,
-            Item={
-                "event_id": {"S": event_id},
-                "status": {"S": _EVENT_STATE_IN_FLIGHT},
-                "updated_at": {"N": str(now_timestamp)},
-                "expires_at": {"N": str(now_timestamp + IN_FLIGHT_EVENT_TTL_SECONDS)},
-            },
-            ConditionExpression="attribute_not_exists(event_id)",
-        )
-        return False, None, _DEDUPE_BACKEND_DDB
-    except ClientError as exc:
-        error_code = str(exc.response.get("Error", {}).get("Code", ""))
-        if error_code == "ConditionalCheckFailedException":
-            duplicate_status = _get_dynamodb_event_status(event_id) or "existing"
-            return True, duplicate_status, _DEDUPE_BACKEND_DDB
-        _disable_dynamodb_dedupe_runtime("falha em put_item", exc)
-    except Exception as exc:  # pragma: no cover - somente para cenários reais de infraestrutura
-        _disable_dynamodb_dedupe_runtime("falha inesperada em put_item", exc)
-
-    return _claim_local_event_processing(event_id)
-
-
-def _finalize_dynamodb_event_processing(event_id: str, was_successful: bool) -> None:
-    now_timestamp = int(time.time())
-    try:
-        if was_successful:
-            _get_dynamodb_client().update_item(
-                TableName=_DDB_DEDUP_TABLE_NAME,
-                Key={"event_id": {"S": event_id}},
-                UpdateExpression="SET #status = :status, updated_at = :updated_at, expires_at = :expires_at",
-                ExpressionAttributeNames={"#status": "status"},
-                ExpressionAttributeValues={
-                    ":status": {"S": _EVENT_STATE_PROCESSED},
-                    ":updated_at": {"N": str(now_timestamp)},
-                    ":expires_at": {"N": str(now_timestamp + PROCESSED_EVENT_TTL_SECONDS)},
-                },
-            )
-            return
-
-        _get_dynamodb_client().delete_item(
-            TableName=_DDB_DEDUP_TABLE_NAME,
-            Key={"event_id": {"S": event_id}},
-        )
-    except Exception as exc:  # pragma: no cover - somente para cenários reais de infraestrutura
-        logger.warning("Falha ao finalizar dedupe no DynamoDB para event_id=%s: %s", event_id, exc)
-
-
-def _claim_event_processing(event_id: str) -> tuple[bool, str | None, str]:
-    if _is_dynamodb_dedupe_enabled():
-        return _claim_dynamodb_event_processing(event_id)
-    return _claim_local_event_processing(event_id)
+        return False, None
 
 
 def _should_short_circuit_retry(headers_lower: dict[str, str], body_json: dict[str, Any] | None) -> bool:
-    if _is_dynamodb_dedupe_enabled():
-        return False
-    if not _SKIP_HTTP_TIMEOUT_RETRIES_WITHOUT_DDB:
+    if not _SKIP_HTTP_TIMEOUT_RETRIES:
         return False
     if not body_json or body_json.get("type") != "event_callback":
         return False
@@ -309,25 +191,29 @@ def _should_short_circuit_retry(headers_lower: dict[str, str], body_json: dict[s
 
 def _is_duplicate_slack_event(
     body_json: dict[str, Any] | None,
-) -> tuple[bool, str | None, str | None, str | None]:
+) -> tuple[bool, str | None, str | None]:
     if not body_json or body_json.get("type") != "event_callback":
-        return False, None, None, None
+        return False, None, None
 
     event_id = str(body_json.get("event_id", "")).strip()
     if not event_id:
-        return False, None, None, None
+        return False, None, None
 
-    is_duplicate, duplicate_status, dedupe_backend = _claim_event_processing(event_id)
-    return is_duplicate, event_id, duplicate_status, dedupe_backend
+    is_duplicate, duplicate_status = _claim_event_processing(event_id)
+    return is_duplicate, event_id, duplicate_status
 
 
-def _finalize_slack_event_processing(event_id: str | None, was_successful: bool, dedupe_backend: str | None) -> None:
+def _finalize_slack_event_processing(event_id: str | None, was_successful: bool) -> None:
     if not event_id:
         return
-    if dedupe_backend == _DEDUPE_BACKEND_DDB:
-        _finalize_dynamodb_event_processing(event_id, was_successful)
-        return
-    _finalize_local_event_processing(event_id, was_successful)
+
+    now_timestamp = time.time()
+    with _PROCESSED_EVENTS_LOCK:
+        _prune_processed_event_ids(now_timestamp)
+        if was_successful:
+            _SLACK_EVENT_STATES[event_id] = {"status": _EVENT_STATE_PROCESSED, "updated_at": now_timestamp}
+            return
+        _SLACK_EVENT_STATES.pop(event_id, None)
 
 
 def _handle_url_verification_if_present(body_json: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -395,7 +281,6 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     started_at = time.perf_counter()
     response_status = 500
     tracked_event_id: str | None = None
-    tracked_event_backend: str | None = None
     should_finalize_tracked_event = False
     tracked_event_success = False
 
@@ -435,26 +320,19 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
         if _should_short_circuit_retry(headers_lower, body_json):
             logger.info(
-                "Retry http_timeout ignorado sem dedupe distribuído (event_id=%s). "
-                "Configure SLACK_EVENT_DEDUP_TABLE para idempotência entre instâncias.",
+                "Retry http_timeout ignorado para evitar duplicidade (event_id=%s).",
                 str((body_json or {}).get("event_id", "")).strip() or "unknown",
             )
             response_status = 200
             return _ok_response()
 
-        is_duplicate, event_id, duplicate_status, dedupe_backend = _is_duplicate_slack_event(body_json)
+        is_duplicate, event_id, duplicate_status = _is_duplicate_slack_event(body_json)
         if is_duplicate:
-            logger.info(
-                "event_id=%s já está em status='%s' (backend=%s). Ignorando duplicidade.",
-                event_id,
-                duplicate_status,
-                dedupe_backend,
-            )
+            logger.info("event_id=%s já está em status='%s'. Ignorando duplicidade.", event_id, duplicate_status)
             response_status = 200
             return _ok_response()
 
         tracked_event_id = event_id
-        tracked_event_backend = dedupe_backend
         should_finalize_tracked_event = bool(event_id)
 
         bolt_req = BoltRequest(
@@ -476,7 +354,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         }
     finally:
         if should_finalize_tracked_event:
-            _finalize_slack_event_processing(tracked_event_id, tracked_event_success, tracked_event_backend)
+            _finalize_slack_event_processing(tracked_event_id, tracked_event_success)
 
         duration_ms = (time.perf_counter() - started_at) * 1000
         logger.info(
