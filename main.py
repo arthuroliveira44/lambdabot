@@ -3,14 +3,15 @@ import json
 import logging
 import os
 import time
+from functools import lru_cache
 from threading import Lock
 from typing import Any, Callable
 
-from slack_bolt import App
-from slack_bolt.request import BoltRequest
-from slack_bolt.response import BoltResponse
+import boto3
+from slack_sdk.signature import SignatureVerifier
 
-from data_slacklake.config import SLACK_BOT_TOKEN, SLACK_SIGNING_SECRET
+from data_slacklake.config import SLACK_SIGNING_SECRET
+from data_slacklake.services.slack_mention_service import process_app_mention_event
 
 
 def _configure_logger() -> logging.Logger:
@@ -32,6 +33,7 @@ _SKIP_HTTP_TIMEOUT_RETRIES = os.getenv(
     "SLACK_SKIP_HTTP_TIMEOUT_RETRIES",
     "true",
 ).strip().lower() in {"1", "true", "yes", "on"}
+_WORKER_LAMBDA_NAME = os.getenv("SLACK_WORKER_LAMBDA_NAME", "").strip()
 _SENSITIVE_HEADERS = frozenset(
     {
         "authorization",
@@ -50,39 +52,6 @@ _HEADERS_TO_LOG = (
     "x-slack-retry-reason",
     "x-slack-signature",
 )
-
-
-def _extract_question_from_mention(message_text: str) -> str:
-    if ">" in message_text:
-        return message_text.split(">", 1)[1].strip()
-    return message_text.strip()
-
-
-def _build_conversation_key(event_payload: dict[str, Any]) -> str:
-    """
-    Gera uma chave estável por canal/thread/usuário para memória conversacional.
-    """
-    channel_id = event_payload.get("channel", "unknown-channel")
-    thread_ts = event_payload.get("thread_ts") or event_payload.get("ts") or "no-thread"
-    user_id = event_payload.get("user", "unknown-user")
-    return f"slack:{channel_id}:{thread_ts}:{user_id}"
-
-
-def _build_genie_usage_message() -> str:
-    # Import tardio para evitar custo de import no cold start antes de uso real.
-    from data_slacklake.services.ai_service import list_configured_genie_commands
-
-    commands = list_configured_genie_commands()
-    if commands:
-        commands_text = ", ".join(commands)
-        first_command = commands[0]
-        return (
-            "Me envie uma pergunta para consultar a Genie.\n"
-            f"Comandos configurados: {commands_text}\n"
-            f"Exemplo: `{first_command} quantas operações tivemos esse ano?`"
-        )
-
-    return "Me envie uma pergunta para consultar a Genie. Exemplo: `quantas operações tivemos esse ano?`"
 
 
 def _lowercase_headers(raw_headers: dict[str, Any] | None) -> dict[str, str]:
@@ -233,44 +202,81 @@ def _handle_url_verification_if_present(body_json: dict[str, Any] | None) -> dic
 logger = _configure_logger()
 
 
-app = App(
-    token=SLACK_BOT_TOKEN,
-    signing_secret=SLACK_SIGNING_SECRET,
-    process_before_response=True,
-)
+@lru_cache(maxsize=1)
+def _get_signature_verifier() -> SignatureVerifier:
+    return SignatureVerifier(signing_secret=SLACK_SIGNING_SECRET)
 
 
-@app.event("app_mention")
-def handle_app_mentions(body: dict[str, Any], say: Callable[..., Any]) -> None:
-    """
-    Listener for when the bot is mentioned in the channels.
-    """
-    event_payload = body.get("event", {})
-    message_text = event_payload.get("text", "")
-    user_id = event_payload.get("user", "Desconhecido")
-    event_ts = event_payload.get("ts")
-    thread_ts = event_payload.get("thread_ts") or event_ts
-    user_question = _extract_question_from_mention(message_text)
+@lru_cache(maxsize=1)
+def _get_lambda_client():
+    return boto3.client("lambda")
 
-    if not user_question:
-        usage_message = _build_genie_usage_message()
-        say(f"Olá <@{user_id}>! {usage_message}", thread_ts=thread_ts)
-        return
 
-    logger.info("Pergunta de %s: %s", user_id, user_question)
-    say(f"Olá <@{user_id}>! Consultando a Genie...", thread_ts=thread_ts)
+def _is_valid_slack_request(headers_lower: dict[str, str], body_content: str) -> bool:
+    request_signature = headers_lower.get("x-slack-signature", "")
+    request_timestamp = headers_lower.get("x-slack-request-timestamp", "")
+    if not request_signature or not request_timestamp:
+        return False
+
+    verifier = _get_signature_verifier()
+    return bool(
+        verifier.is_valid(
+            body=body_content,
+            timestamp=request_timestamp,
+            signature=request_signature,
+        )
+    )
+
+
+def _is_app_mention_event(body_json: dict[str, Any] | None) -> bool:
+    if not body_json or body_json.get("type") != "event_callback":
+        return False
+    event_payload = body_json.get("event", {})
+    return isinstance(event_payload, dict) and event_payload.get("type") == "app_mention"
+
+
+def _invoke_worker_async(body_json: dict[str, Any], request_id: str) -> bool:
+    if not _WORKER_LAMBDA_NAME:
+        logger.error("SLACK_WORKER_LAMBDA_NAME não configurado. Não foi possível encaminhar evento ao worker.")
+        return False
+
+    event_payload = body_json.get("event", {})
+    worker_payload = {
+        "source": "slack-ingress",
+        "request_id": request_id,
+        "event_id": body_json.get("event_id"),
+        "team_id": body_json.get("team_id"),
+        "event_time": body_json.get("event_time"),
+        "event_payload": event_payload,
+    }
 
     try:
-        from data_slacklake.services.ai_service import process_question
-
-        conversation_key = _build_conversation_key(event_payload)
-        answer_text, sql_debug = process_question(user_question, conversation_key=conversation_key)
-        say(answer_text, thread_ts=thread_ts)
-        if sql_debug:
-            say(f"*Debug SQL:* ```{sql_debug}```", thread_ts=thread_ts)
+        invoke_response = _get_lambda_client().invoke(
+            FunctionName=_WORKER_LAMBDA_NAME,
+            InvocationType="Event",
+            Payload=json.dumps(worker_payload).encode("utf-8"),
+        )
     except Exception as exc:
-        logger.error("Erro ao processar menção: %s", exc, exc_info=True)
-        say(f"Erro crítico: {str(exc)}", thread_ts=thread_ts)
+        logger.error("Falha ao invocar worker assíncrono: %s", exc, exc_info=True)
+        return False
+
+    status_code = int(invoke_response.get("StatusCode", 0))
+    if status_code not in (200, 202):
+        logger.error("Worker retornou status inesperado na invocação assíncrona: %s", status_code)
+        return False
+    return True
+
+
+def handle_app_mentions(body: dict[str, Any], say: Callable[..., Any]) -> None:
+    """
+    Wrapper de compatibilidade para testes e execução local.
+    """
+    event_payload = body.get("event", {})
+
+    def _send_message(text: str, thread_ts: str | None) -> Any:
+        return say(text, thread_ts=thread_ts)
+
+    process_app_mention_event(event_payload, _send_message)
 
 
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
@@ -318,6 +324,15 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             response_status = int(url_verification_response.get("statusCode", 200))
             return url_verification_response
 
+        if not _is_valid_slack_request(headers_lower, body_content):
+            logger.warning("Assinatura Slack inválida (request_id=%s).", request_id)
+            response_status = 401
+            return {"statusCode": 401, "body": "Invalid signature"}
+
+        if not _is_app_mention_event(body_json):
+            response_status = 200
+            return _ok_response()
+
         if _should_short_circuit_retry(headers_lower, body_json):
             logger.info(
                 "Retry http_timeout ignorado para evitar duplicidade (event_id=%s).",
@@ -335,23 +350,14 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         tracked_event_id = event_id
         should_finalize_tracked_event = bool(event_id)
 
-        bolt_req = BoltRequest(
-            body=body_content,
-            query=event.get("queryStringParameters", {}),
-            headers=headers,
-        )
+        invoked_successfully = _invoke_worker_async(body_json, request_id)
+        if not invoked_successfully:
+            response_status = 500
+            return {"statusCode": 500, "body": "Failed to enqueue worker"}
 
-        bolt_resp: BoltResponse = app.dispatch(bolt_req)
-
-        logger.info("STATUS DO BOLT: %s", bolt_resp.status)
-
-        response_status = bolt_resp.status
-        tracked_event_success = 200 <= int(bolt_resp.status) < 300
-        return {
-            "statusCode": bolt_resp.status,
-            "body": bolt_resp.body,
-            "headers": bolt_resp.headers,
-        }
+        response_status = 200
+        tracked_event_success = True
+        return _ok_response()
     finally:
         if should_finalize_tracked_event:
             _finalize_slack_event_processing(tracked_event_id, tracked_event_success)

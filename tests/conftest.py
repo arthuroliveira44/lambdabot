@@ -11,6 +11,7 @@ BASE_ENV_VARS = {
     "app_env": "test",
     "SLACK_BOT_TOKEN": "xoxb-test-token",
     "SLACK_SIGNING_SECRET": "test-secret",
+    "SLACK_WORKER_LAMBDA_NAME": "test-worker-lambda",
     "DATABRICKS_TOKEN": "test-db-token",
     "DATABRICKS_HOST": "test.databricks.com",
     "DATABRICKS_HTTP_PATH": "/sql/1.0/endpoints/test",

@@ -297,8 +297,9 @@ def test_failed_processing_releases_event_id_for_new_retry():
     _SLACK_EVENT_STATES.clear()  # pylint: disable=protected-access
 
 
-@patch("main.app.dispatch")
-def test_handler_ignores_http_timeout_retry(mock_dispatch):
+@patch("main._invoke_worker_async")
+@patch("main._is_valid_slack_request", return_value=True)
+def test_handler_ignores_http_timeout_retry(_mock_signature, mock_invoke_worker):
     """Retry por timeout é ignorado para evitar resposta duplicada."""
     from main import handler
 
@@ -328,4 +329,36 @@ def test_handler_ignores_http_timeout_retry(mock_dispatch):
         response = handler(event, context)
 
     assert response["statusCode"] == 200
-    mock_dispatch.assert_not_called()
+    mock_invoke_worker.assert_not_called()
+
+
+@patch("main._invoke_worker_async", return_value=True)
+@patch("main._is_valid_slack_request", return_value=True)
+def test_ingress_enfileira_evento_no_worker(_mock_signature, mock_invoke_worker):
+    """Ingress deve invocar worker assíncrono para app_mention válido."""
+    from main import handler
+
+    event = {
+        "httpMethod": "POST",
+        "path": "/v1/data-slacklake/bot",
+        "headers": {
+            "user-agent": "Slackbot 1.0 (+https://api.slack.com/robots)",
+            "x-slack-signature": "v0=abc123",
+            "x-slack-request-timestamp": "1771004333",
+        },
+        "body": json.dumps(
+            {
+                "type": "event_callback",
+                "event_id": "EvIngressWorker1",
+                "team_id": "TL3PXCH4L",
+                "event": {"type": "app_mention", "user": "U1", "channel": "C1", "ts": "111.222", "text": "<@BOT> oi"},
+            }
+        ),
+        "isBase64Encoded": False,
+    }
+    context = type("LambdaContext", (), {"aws_request_id": "req-ingress-worker"})()
+
+    response = handler(event, context)
+
+    assert response["statusCode"] == 200
+    mock_invoke_worker.assert_called_once()
