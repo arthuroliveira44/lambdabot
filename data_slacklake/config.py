@@ -6,41 +6,16 @@ from __future__ import annotations
 import logging
 import os
 from functools import lru_cache
-from typing import Final
 
 import boto3
 
 logger = logging.getLogger("DatabricksBot")
 logger.setLevel(logging.INFO)
 
-DEFAULT_AWS_REGION: Final[str] = "us-east-1"
-TRUTHY_VALUES: Final[set[str]] = {"1", "true", "t", "yes", "y", "on"}
-FALSY_VALUES: Final[set[str]] = {"0", "false", "f", "no", "n", "off"}
+DEFAULT_AWS_REGION = "us-east-1"
 
 APP_ENV = os.getenv("app_env", "dev")
 SSM_PREFIX = f"/{APP_ENV}/data-slacklake"
-
-
-def _parse_bool_env(env_value: str | bool | None, *, default: bool) -> bool:
-    """Parseia variáveis de ambiente booleanas de forma resiliente."""
-    if isinstance(env_value, bool):
-        return env_value
-    if env_value is None:
-        return default
-
-    normalized_value = str(env_value).strip().lower()
-    if normalized_value in TRUTHY_VALUES:
-        return True
-    if normalized_value in FALSY_VALUES:
-        return False
-
-    logger.warning(
-        "Valor booleano inválido para ambiente: %s. Usando default=%s.",
-        env_value,
-        default,
-    )
-    return default
-
 
 @lru_cache(maxsize=16)
 def get_ssm_param(prefix: str, param_name: str, required: bool = True) -> str | None:
@@ -75,10 +50,14 @@ SLACK_SIGNING_SECRET = get_ssm_param(SSM_PREFIX, "slack_signing_secret", require
 DATABRICKS_TOKEN = get_ssm_param(SSM_PREFIX, "databricks_pat_token")
 DATABRICKS_HOST = get_ssm_param(SSM_PREFIX, "databricks_url")
 DATABRICKS_HTTP_PATH = get_ssm_param(SSM_PREFIX, "databricks_http_path")
-LLM_ENDPOINT = os.getenv("LLM_ENDPOINT", "databricks-llama-4-maverick")
-GENIE_ENABLED = _parse_bool_env(os.getenv("GENIE_ENABLED"), default=True)
+
+# Genie padrão usada quando o usuário não informar comando (!nome).
 GENIE_SPACE_ID = os.getenv("GENIE_SPACE_ID", "01f105e3c99e1527b3cb9bd0f5418626")
-GENIE_SPACE_MAP = os.getenv("GENIE_SPACE_MAP", "")
+
+# Mapeamento de aliases para Space IDs.
+# Exemplo: {"!remessagpt": "space-1", "!remessafin": "space-2", "!marketing": "space-3"}
+# Mantém fallback para GENIE_SPACE_MAP por compatibilidade de deploy.
+GENIE_BOT_SPACE_MAP = os.getenv("GENIE_BOT_SPACE_MAP") or os.getenv("GENIE_SPACE_MAP", "")
 
 if DATABRICKS_HOST:
     os.environ["DATABRICKS_HOST"] = DATABRICKS_HOST

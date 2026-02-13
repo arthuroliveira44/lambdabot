@@ -14,6 +14,7 @@ BASE_ENV_VARS = {
     "DATABRICKS_TOKEN": "test-db-token",
     "DATABRICKS_HOST": "test.databricks.com",
     "DATABRICKS_HTTP_PATH": "/sql/1.0/endpoints/test",
+    "GENIE_SPACE_ID": "space-default",
 }
 
 TRACING_ENV_VARS = {
@@ -25,9 +26,7 @@ TRACING_ENV_VARS = {
 for env_name, env_value in {**BASE_ENV_VARS, **TRACING_ENV_VARS}.items():
     os.environ.setdefault(env_name, env_value)
 
-os.environ.setdefault("GENIE_ENABLED", "false")
-os.environ.pop("GENIE_SPACE_ID", None)
-os.environ.pop("GENIE_SPACE_MAP", None)
+os.environ.setdefault("GENIE_BOT_SPACE_MAP", "")
 
 mocked_ssm_client = MagicMock()
 mocked_ssm_client.get_parameter.return_value = {
@@ -42,9 +41,8 @@ patcher_boto.start()
 try:
     import data_slacklake.config as cfg  # pylint: disable=import-outside-toplevel
 
-    cfg.GENIE_ENABLED = False
-    cfg.GENIE_SPACE_ID = ""
-    cfg.GENIE_SPACE_MAP = ""
+    cfg.GENIE_SPACE_ID = "space-default"
+    cfg.GENIE_BOT_SPACE_MAP = ""
 except Exception:
     pass
 
