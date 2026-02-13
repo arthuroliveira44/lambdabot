@@ -249,19 +249,48 @@ def test_build_event_log_summary_redacts_sensitive_data():
     assert "token-ultra-secreto" not in str(summary)
 
 
-def test_is_duplicate_slack_event_detects_retries_by_event_id():
-    """Evita reprocessar o mesmo event_id mais de uma vez."""
-    from main import _PROCESSED_EVENT_IDS, _is_duplicate_slack_event
+def test_is_duplicate_slack_event_detects_in_flight_and_processed_states():
+    """Evita concorrência e duplicidade após evento concluído."""
+    from main import _SLACK_EVENT_STATES, _finalize_slack_event_processing, _is_duplicate_slack_event
 
-    _PROCESSED_EVENT_IDS.clear()  # pylint: disable=protected-access
+    _SLACK_EVENT_STATES.clear()  # pylint: disable=protected-access
     body_json = {"type": "event_callback", "event_id": "EvDup123", "event": {"type": "app_mention"}}
 
-    is_duplicate_first, event_id_first = _is_duplicate_slack_event(body_json)
-    is_duplicate_second, event_id_second = _is_duplicate_slack_event(body_json)
+    is_duplicate_first, event_id_first, duplicate_state_first = _is_duplicate_slack_event(body_json)
+    is_duplicate_second, event_id_second, duplicate_state_second = _is_duplicate_slack_event(body_json)
 
     assert is_duplicate_first is False
     assert event_id_first == "EvDup123"
+    assert duplicate_state_first is None
+
     assert is_duplicate_second is True
     assert event_id_second == "EvDup123"
+    assert duplicate_state_second == "in_flight"
 
-    _PROCESSED_EVENT_IDS.clear()  # pylint: disable=protected-access
+    _finalize_slack_event_processing("EvDup123", was_successful=True)
+    is_duplicate_third, event_id_third, duplicate_state_third = _is_duplicate_slack_event(body_json)
+    assert is_duplicate_third is True
+    assert event_id_third == "EvDup123"
+    assert duplicate_state_third == "processed"
+
+    _SLACK_EVENT_STATES.clear()  # pylint: disable=protected-access
+
+
+def test_failed_processing_releases_event_id_for_new_retry():
+    """Se processamento falhar, event_id volta a ficar elegível para retry."""
+    from main import _SLACK_EVENT_STATES, _finalize_slack_event_processing, _is_duplicate_slack_event
+
+    _SLACK_EVENT_STATES.clear()  # pylint: disable=protected-access
+    body_json = {"type": "event_callback", "event_id": "EvRetry123", "event": {"type": "app_mention"}}
+
+    is_duplicate_first, _, _ = _is_duplicate_slack_event(body_json)
+    assert is_duplicate_first is False
+
+    _finalize_slack_event_processing("EvRetry123", was_successful=False)
+
+    is_duplicate_second, event_id_second, duplicate_state_second = _is_duplicate_slack_event(body_json)
+    assert is_duplicate_second is False
+    assert event_id_second == "EvRetry123"
+    assert duplicate_state_second is None
+
+    _SLACK_EVENT_STATES.clear()  # pylint: disable=protected-access

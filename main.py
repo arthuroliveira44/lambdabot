@@ -22,8 +22,11 @@ def _configure_logger() -> logging.Logger:
 
 
 PROCESSED_EVENT_TTL_SECONDS = 60 * 60
-_PROCESSED_EVENT_IDS: dict[str, float] = {}
+IN_FLIGHT_EVENT_TTL_SECONDS = 5 * 60
+_SLACK_EVENT_STATES: dict[str, dict[str, Any]] = {}
 _PROCESSED_EVENTS_LOCK = Lock()
+_EVENT_STATE_IN_FLIGHT = "in_flight"
+_EVENT_STATE_PROCESSED = "processed"
 _SENSITIVE_HEADERS = frozenset(
     {
         "authorization",
@@ -140,32 +143,55 @@ def _build_event_log_summary(
 
 
 def _prune_processed_event_ids(now_timestamp: float) -> None:
-    expiration_limit = now_timestamp - PROCESSED_EVENT_TTL_SECONDS
-    expired_event_ids = [
-        event_id
-        for event_id, processed_at in _PROCESSED_EVENT_IDS.items()
-        if float(processed_at) < expiration_limit
-    ]
+    processed_expiration_limit = now_timestamp - PROCESSED_EVENT_TTL_SECONDS
+    in_flight_expiration_limit = now_timestamp - IN_FLIGHT_EVENT_TTL_SECONDS
+    expired_event_ids = []
+    for event_id, state_data in _SLACK_EVENT_STATES.items():
+        updated_at = float(state_data.get("updated_at", 0.0))
+        status = str(state_data.get("status", ""))
+        if status == _EVENT_STATE_PROCESSED and updated_at < processed_expiration_limit:
+            expired_event_ids.append(event_id)
+        elif status == _EVENT_STATE_IN_FLIGHT and updated_at < in_flight_expiration_limit:
+            expired_event_ids.append(event_id)
+
     for event_id in expired_event_ids:
-        _PROCESSED_EVENT_IDS.pop(event_id, None)
+        _SLACK_EVENT_STATES.pop(event_id, None)
 
 
-def _is_duplicate_slack_event(body_json: dict[str, Any] | None) -> tuple[bool, str | None]:
+def _is_duplicate_slack_event(body_json: dict[str, Any] | None) -> tuple[bool, str | None, str | None]:
     if not body_json or body_json.get("type") != "event_callback":
-        return False, None
+        return False, None, None
 
     event_id = str(body_json.get("event_id", "")).strip()
     if not event_id:
-        return False, None
+        return False, None, None
 
     now_timestamp = time.time()
     with _PROCESSED_EVENTS_LOCK:
         _prune_processed_event_ids(now_timestamp)
-        if event_id in _PROCESSED_EVENT_IDS:
-            return True, event_id
-        _PROCESSED_EVENT_IDS[event_id] = now_timestamp
+        state_data = _SLACK_EVENT_STATES.get(event_id) or {}
+        status = str(state_data.get("status", ""))
+        if status == _EVENT_STATE_PROCESSED:
+            return True, event_id, _EVENT_STATE_PROCESSED
+        if status == _EVENT_STATE_IN_FLIGHT:
+            return True, event_id, _EVENT_STATE_IN_FLIGHT
 
-    return False, event_id
+        _SLACK_EVENT_STATES[event_id] = {"status": _EVENT_STATE_IN_FLIGHT, "updated_at": now_timestamp}
+
+    return False, event_id, None
+
+
+def _finalize_slack_event_processing(event_id: str | None, was_successful: bool) -> None:
+    if not event_id:
+        return
+
+    now_timestamp = time.time()
+    with _PROCESSED_EVENTS_LOCK:
+        _prune_processed_event_ids(now_timestamp)
+        if was_successful:
+            _SLACK_EVENT_STATES[event_id] = {"status": _EVENT_STATE_PROCESSED, "updated_at": now_timestamp}
+            return
+        _SLACK_EVENT_STATES.pop(event_id, None)
 
 
 def _handle_url_verification_if_present(body_json: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -232,6 +258,9 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     request_id = getattr(context, "aws_request_id", "unknown-request-id")
     started_at = time.perf_counter()
     response_status = 500
+    tracked_event_id: str | None = None
+    should_finalize_tracked_event = False
+    tracked_event_success = False
 
     headers = event.get("headers", {})
     headers_lower = _lowercase_headers(headers)
@@ -243,12 +272,11 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
         if "x-slack-retry-num" in headers_lower:
             logger.info(
-                "Retry do Slack detectado (request_id=%s, retry_num=%s). Ignorando para evitar duplicidade.",
+                "Retry do Slack detectado (request_id=%s, retry_num=%s, retry_reason=%s).",
                 request_id,
                 headers_lower.get("x-slack-retry-num"),
+                headers_lower.get("x-slack-retry-reason"),
             )
-            response_status = 200
-            return _ok_response()
 
         try:
             body_content = _decode_request_body(event)
@@ -268,11 +296,14 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             response_status = int(url_verification_response.get("statusCode", 200))
             return url_verification_response
 
-        is_duplicate, event_id = _is_duplicate_slack_event(body_json)
+        is_duplicate, event_id, duplicate_status = _is_duplicate_slack_event(body_json)
         if is_duplicate:
-            logger.info("event_id=%s já processado. Ignorando duplicidade.", event_id)
+            logger.info("event_id=%s já está em status='%s'. Ignorando duplicidade.", event_id, duplicate_status)
             response_status = 200
             return _ok_response()
+
+        tracked_event_id = event_id
+        should_finalize_tracked_event = bool(event_id)
 
         bolt_req = BoltRequest(
             body=body_content,
@@ -285,12 +316,16 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         logger.info("STATUS DO BOLT: %s", bolt_resp.status)
 
         response_status = bolt_resp.status
+        tracked_event_success = 200 <= int(bolt_resp.status) < 300
         return {
             "statusCode": bolt_resp.status,
             "body": bolt_resp.body,
             "headers": bolt_resp.headers,
         }
     finally:
+        if should_finalize_tracked_event:
+            _finalize_slack_event_processing(tracked_event_id, tracked_event_success)
+
         duration_ms = (time.perf_counter() - started_at) * 1000
         logger.info(
             "FIM REQUEST (request_id=%s, status=%s, duration_ms=%.2f)",
