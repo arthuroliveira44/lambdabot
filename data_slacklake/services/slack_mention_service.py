@@ -1,3 +1,5 @@
+"""Serviço de processamento de eventos app_mention do Slack."""
+
 from __future__ import annotations
 
 import logging
@@ -21,8 +23,11 @@ def _build_conversation_key(event_payload: dict[str, Any]) -> str:
 
 
 def _build_genie_usage_message() -> str:
+    """Monta mensagem de ajuda com comandos Genie disponíveis."""
     # Import tardio para evitar custo de import no cold start antes de uso real.
-    from data_slacklake.services.ai_service import list_configured_genie_commands
+    from data_slacklake.services.ai_service import (  # pylint: disable=import-outside-toplevel
+        list_configured_genie_commands,
+    )
 
     commands = list_configured_genie_commands()
     if commands:
@@ -41,6 +46,7 @@ def process_app_mention_event(
     event_payload: dict[str, Any],
     send_message: Callable[[str, str | None], Any],
 ) -> None:
+    """Processa um app_mention e envia respostas via callback de envio."""
     message_text = event_payload.get("text", "")
     user_id = event_payload.get("user", "Desconhecido")
     event_ts = event_payload.get("ts")
@@ -56,7 +62,9 @@ def process_app_mention_event(
     send_message(f"Olá <@{user_id}>! Consultando a Genie...", thread_ts)
 
     try:
-        from data_slacklake.services.ai_service import process_question
+        from data_slacklake.services.ai_service import (  # pylint: disable=import-outside-toplevel
+            process_question,
+        )
 
         conversation_key = _build_conversation_key(event_payload)
         answer_text, sql_debug = process_question(user_question, conversation_key=conversation_key)

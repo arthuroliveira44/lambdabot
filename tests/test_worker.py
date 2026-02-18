@@ -1,10 +1,12 @@
+"""Testes unitários para o Lambda worker."""
+
 from unittest.mock import patch
 
+from worker import handler
 
 @patch("worker.process_app_mention_event")
 def test_worker_processa_evento_de_app_mention(mock_process_event):
-    from worker import handler
-
+    """Worker deve processar payload válido com sucesso."""
     event = {
         "event_id": "EvWorker123",
         "event_payload": {
@@ -24,8 +26,7 @@ def test_worker_processa_evento_de_app_mention(mock_process_event):
 
 @patch("worker.process_app_mention_event", side_effect=RuntimeError("falha worker"))
 def test_worker_retorna_500_quando_falha(mock_process_event):
-    from worker import handler
-
+    """Worker deve retornar erro quando processamento levantar exceção."""
     event = {
         "event_id": "EvWorkerError",
         "event_payload": {
