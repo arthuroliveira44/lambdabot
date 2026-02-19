@@ -1,55 +1,84 @@
 """
-Manages environment variables, SSM secrets, and connection settings for Slack and Databricks.
+Worker configuration for Slack + Databricks + Genie.
 """
 from __future__ import annotations
 
-import logging
 import os
-from functools import lru_cache
 
-import boto3
-
-logger = logging.getLogger("DatabricksBot")
-logger.setLevel(logging.INFO)
-
-DEFAULT_AWS_REGION = "us-east-1"
-
-APP_ENV = os.getenv("app_env", "dev")
-SSM_PREFIX = f"/{APP_ENV}/data-slacklake"
-
-@lru_cache(maxsize=16)
-def get_ssm_param(prefix: str, param_name: str, required: bool = True) -> str | None:
-    """
-    Search for the secret by combining the prefix + parameter name.
-    """
-
-    full_path = f"{prefix}/{param_name}"
-
-    try:
-        ssm_client = boto3.client("ssm", region_name=DEFAULT_AWS_REGION)
-
-        logger.info("SSM Fetch: %s", full_path)
-        response = ssm_client.get_parameter(Name=full_path, WithDecryption=True)
-        return response["Parameter"]["Value"]
-
-    except Exception as exc:
-        error_message = f"ERRO SSM: Falha ao ler '{full_path}'. Erro: {str(exc)}"
-        if required:
-            logger.error(error_message)
-            raise ValueError(error_message) from exc
-
-        logger.warning(error_message)
-        return None
-
-
-SLACK_BOT_TOKEN = get_ssm_param(SSM_PREFIX, "slack_bot_token")
-SLACK_SIGNING_SECRET = get_ssm_param(SSM_PREFIX, "slack_signing_secret", required=False) or get_ssm_param(
+from data_slacklake.config_shared import (
     SSM_PREFIX,
-    "slack_app_token",
+    fetch_ssm_params,
+    get_first_env_value,
+    logger,
+    require_setting,
+    resolve_signing_secret,
 )
-DATABRICKS_TOKEN = get_ssm_param(SSM_PREFIX, "databricks_pat_token")
-DATABRICKS_HOST = get_ssm_param(SSM_PREFIX, "databricks_url")
-DATABRICKS_HTTP_PATH = get_ssm_param(SSM_PREFIX, "databricks_http_path")
+
+
+def _resolve_worker_settings() -> dict[str, str | None]:
+    env_values = {
+        "slack_bot_token": get_first_env_value("SLACK_BOT_TOKEN"),
+        "slack_signing_secret": get_first_env_value("SLACK_SIGNING_SECRET"),
+        "slack_app_token": get_first_env_value("SLACK_APP_TOKEN"),
+        "databricks_pat_token": get_first_env_value("DATABRICKS_TOKEN", "DATABRICKS_PAT_TOKEN"),
+        "databricks_url": get_first_env_value("DATABRICKS_HOST", "DATABRICKS_URL"),
+        "databricks_http_path": get_first_env_value("DATABRICKS_HTTP_PATH"),
+    }
+
+    signing_values = resolve_signing_secret(
+        {
+            "slack_signing_secret": env_values.get("slack_signing_secret"),
+            "slack_app_token": env_values.get("slack_app_token"),
+        },
+        force_ssm_signing_secret=False,
+    )
+    env_values["slack_signing_secret"] = signing_values.get("slack_signing_secret")
+    env_values["slack_app_token"] = signing_values.get("slack_app_token")
+
+    missing_params = [
+        key
+        for key in (
+            "slack_bot_token",
+            "databricks_pat_token",
+            "databricks_url",
+            "databricks_http_path",
+        )
+        if not env_values.get(key)
+    ]
+
+    ssm_values = fetch_ssm_params(SSM_PREFIX, tuple(missing_params)) if missing_params else {}
+    resolved_values = {name: env_values.get(name) or ssm_values.get(name) for name in env_values}
+
+    return resolved_values
+
+
+_resolved_settings = _resolve_worker_settings()
+
+SLACK_BOT_TOKEN = require_setting(
+    _resolved_settings.get("slack_bot_token"),
+    env_names=("SLACK_BOT_TOKEN",),
+    ssm_param_name="slack_bot_token",
+)
+SLACK_SIGNING_SECRET = require_setting(
+    _resolved_settings.get("slack_signing_secret"),
+    env_names=("SLACK_SIGNING_SECRET", "SLACK_APP_TOKEN"),
+    ssm_param_name="slack_signing_secret",
+)
+DATABRICKS_TOKEN = require_setting(
+    _resolved_settings.get("databricks_pat_token"),
+    env_names=("DATABRICKS_TOKEN", "DATABRICKS_PAT_TOKEN"),
+    ssm_param_name="databricks_pat_token",
+)
+DATABRICKS_HOST = require_setting(
+    _resolved_settings.get("databricks_url"),
+    env_names=("DATABRICKS_HOST", "DATABRICKS_URL"),
+    ssm_param_name="databricks_url",
+)
+DATABRICKS_HTTP_PATH = require_setting(
+    _resolved_settings.get("databricks_http_path"),
+    env_names=("DATABRICKS_HTTP_PATH",),
+    ssm_param_name="databricks_http_path",
+)
 
 # Genie padrão usada quando o usuário não informar comando (!nome).
 GENIE_SPACE_ID = os.getenv("GENIE_SPACE_ID", "01f105e3c99e1527b3cb9bd0f5418626")

@@ -83,7 +83,7 @@ pipeline {
             }
         }
 
-        stage('Update Lambda Handler') {
+        stage('Update Lambda Functions') {
             when {
                 expression { isDeployBranch() }
             }
@@ -100,17 +100,13 @@ pipeline {
             }
             steps {
                 script {
-                    awsLambda.updateFunctionSourceImage(
-                        functionName: getFunctionName(),
-                        region: getRegion(),
-                        registry:  getRegistry(),
-                        imageName: getImageName(),
-                        imageTag: getImageTag()
+                    updateLambdaFunction(
+                        functionName: getIngressFunctionName(),
+                        functionHandler: getIngressFunctionHandler()
                     )
-                    awsLambda.updateFunctionHandler(
-                        functionName: getFunctionName(),
-                        region: getRegion(),
-                        functionHandler: getFunctionHandler()
+                    updateLambdaFunction(
+                        functionName: getWorkerFunctionName(),
+                        functionHandler: getWorkerFunctionHandler()
                     )
                 }
             }
@@ -140,8 +136,12 @@ def getRegion() {
     return 'us-east-1'
 }
 
-def getFunctionHandler() {
+def getIngressFunctionHandler() {
     return 'main.handler'
+}
+
+def getWorkerFunctionHandler() {
+    return 'worker.handler'
 }
 
 def getImageTag() {
@@ -155,12 +155,34 @@ def getRegistry() {
     return "${sharedAccount}.dkr.ecr.${region}.amazonaws.com"
 }
 
-String getFunctionName() {
+String getIngressFunctionName() {
+    return buildFunctionName('bot')
+}
+
+String getWorkerFunctionName() {
+    return buildFunctionName('bot-worker')
+}
+
+String buildFunctionName(String functionName) {
     def prefix = gitRef.isMain() ? 'prod' : gitRef.realBranchName()
     def regionAlias = aws.aliasForRegion(getRegion())
     def serviceName = 'data-slacklake'
-    def functionName = 'bot'
     return "${prefix}-${regionAlias}-${serviceName}-${functionName}"
+}
+
+def updateLambdaFunction(Map args) {
+    awsLambda.updateFunctionSourceImage(
+        functionName: args.functionName,
+        region: getRegion(),
+        registry:  getRegistry(),
+        imageName: getImageName(),
+        imageTag: getImageTag()
+    )
+    awsLambda.updateFunctionHandler(
+        functionName: args.functionName,
+        region: getRegion(),
+        functionHandler: args.functionHandler
+    )
 }
 
 def targetAccount() {
