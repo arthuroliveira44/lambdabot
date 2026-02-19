@@ -10,7 +10,7 @@ from typing import Any, Callable
 import boto3
 from slack_sdk.signature import SignatureVerifier
 
-from data_slacklake.config import SLACK_SIGNING_SECRET
+from data_slacklake.ingress_config import SLACK_SIGNING_SECRET
 from data_slacklake.services.slack_mention_service import process_app_mention_event
 
 
