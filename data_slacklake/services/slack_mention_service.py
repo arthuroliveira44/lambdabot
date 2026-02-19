@@ -8,16 +8,17 @@ from typing import Any, Callable
 logger = logging.getLogger(__name__)
 
 
-def _extract_question_from_mention(message_text: str) -> str:
-    if ">" in message_text:
-        return message_text.split(">", 1)[1].strip()
-    return message_text.strip()
+def _extract_question_from_mention(message_text: str | None) -> str:
+    normalized_text = str(message_text or "").strip()
+    if ">" in normalized_text:
+        return normalized_text.split(">", 1)[1].strip()
+    return normalized_text
 
 
 def _build_conversation_key(event_payload: dict[str, Any]) -> str:
-    channel_id = event_payload.get("channel", "unknown-channel")
-    thread_ts = event_payload.get("thread_ts") or event_payload.get("ts") or "no-thread"
-    user_id = event_payload.get("user", "unknown-user")
+    channel_id = str(event_payload.get("channel") or "unknown-channel").strip() or "unknown-channel"
+    thread_ts = str(event_payload.get("thread_ts") or event_payload.get("ts") or "no-thread").strip() or "no-thread"
+    user_id = str(event_payload.get("user") or "unknown-user").strip() or "unknown-user"
     return f"slack:{channel_id}:{thread_ts}:{user_id}"
 
 
@@ -46,9 +47,9 @@ def process_app_mention_event(
     send_message: Callable[[str, str | None], Any],
 ) -> None:
     """Processa um app_mention e envia respostas via callback de envio."""
-    message_text = event_payload.get("text", "")
-    user_id = event_payload.get("user", "Desconhecido")
-    event_ts = event_payload.get("ts")
+    message_text = str(event_payload.get("text", ""))
+    user_id = str(event_payload.get("user", "Desconhecido")).strip() or "Desconhecido"
+    event_ts = str(event_payload.get("ts", "")).strip()
     thread_ts = event_payload.get("thread_ts") or event_ts
     user_question = _extract_question_from_mention(message_text)
 
@@ -72,4 +73,4 @@ def process_app_mention_event(
             send_message(f"*Debug SQL:* ```{sql_debug}```", thread_ts)
     except Exception as exc:
         logger.error("Erro ao processar menção: %s", exc, exc_info=True)
-        send_message(f"Erro crítico: {str(exc)}", thread_ts)
+        send_message("Erro crítico ao processar sua solicitação. Tente novamente em instantes.", thread_ts)

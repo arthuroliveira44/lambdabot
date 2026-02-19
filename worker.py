@@ -8,11 +8,10 @@ from data_slacklake.services.slack_mention_service import process_app_mention_ev
 
 
 def _configure_logger() -> logging.Logger:
-    configured_logger = logging.getLogger()
-    if configured_logger.handlers:
-        for existing_handler in list(configured_logger.handlers):
-            configured_logger.removeHandler(existing_handler)
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    if not logging.getLogger().handlers:
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    configured_logger = logging.getLogger(__name__)
+    configured_logger.setLevel(logging.INFO)
     return configured_logger
 
 
@@ -27,7 +26,7 @@ def _send_message(channel_id: str, text: str, thread_ts: str | None = None) -> N
 
 
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
-    del context
+    _ = context
 
     event_id = str(event.get("event_id", "")).strip()
     event_payload = event.get("event_payload") or {}
@@ -36,6 +35,10 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         return {"statusCode": 400, "body": "Invalid payload"}
 
     channel_id = str(event_payload.get("channel", "")).strip()
+    if not channel_id:
+        logger.warning("Payload sem channel no worker. event_id=%s", event_id or "unknown")
+        return {"statusCode": 400, "body": "Invalid payload"}
+
     logger.info(
         "WORKER RECEBIDO: event_id=%s, event_type=%s, channel=%s",
         event_id or "unknown",
@@ -50,6 +53,6 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         process_app_mention_event(event_payload, _sender)
     except Exception as exc:
         logger.error("Falha no processamento do worker para event_id=%s: %s", event_id or "unknown", exc, exc_info=True)
-        return {"statusCode": 500, "body": str(exc)}
+        return {"statusCode": 500, "body": "Internal Server Error"}
 
     return {"statusCode": 200, "body": "OK"}

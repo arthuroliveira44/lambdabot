@@ -1,4 +1,5 @@
 import base64
+import binascii
 import json
 import logging
 import os
@@ -15,11 +16,10 @@ from data_slacklake.services.slack_mention_service import process_app_mention_ev
 
 
 def _configure_logger() -> logging.Logger:
-    configured_logger = logging.getLogger()
-    if configured_logger.handlers:
-        for existing_handler in list(configured_logger.handlers):
-            configured_logger.removeHandler(existing_handler)
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    if not logging.getLogger().handlers:
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    configured_logger = logging.getLogger(__name__)
+    configured_logger.setLevel(logging.INFO)
     return configured_logger
 
 
@@ -78,10 +78,20 @@ def _decode_request_body(event: dict[str, Any]) -> str:
     body_content = event.get("body", "")
     is_base64_encoded = bool(event.get("isBase64Encoded", False))
 
+    if body_content is None:
+        body_content = ""
+    if isinstance(body_content, bytes):
+        try:
+            body_content = body_content.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError("Bad Request: Invalid UTF-8 body") from exc
+    elif not isinstance(body_content, str):
+        raise ValueError("Bad Request: Body must be a string")
+
     if is_base64_encoded and body_content:
         try:
-            return base64.b64decode(body_content).decode("utf-8")
-        except Exception as exc:
+            return base64.b64decode(body_content, validate=True).decode("utf-8")
+        except (binascii.Error, UnicodeDecodeError) as exc:
             raise ValueError("Bad Request: Invalid Base64") from exc
     return body_content
 
@@ -208,7 +218,7 @@ def _get_signature_verifier() -> SignatureVerifier:
 
 
 @lru_cache(maxsize=1)
-def _get_lambda_client():
+def _get_lambda_client() -> Any:
     return boto3.client("lambda")
 
 
@@ -219,13 +229,17 @@ def _is_valid_slack_request(headers_lower: dict[str, str], body_content: str) ->
         return False
 
     verifier = _get_signature_verifier()
-    return bool(
-        verifier.is_valid(
-            body=body_content,
-            timestamp=request_timestamp,
-            signature=request_signature,
+    try:
+        return bool(
+            verifier.is_valid(
+                body=body_content,
+                timestamp=request_timestamp,
+                signature=request_signature,
+            )
         )
-    )
+    except Exception as exc:
+        logger.warning("Falha ao validar assinatura Slack: %s", exc)
+        return False
 
 
 def _is_app_mention_event(body_json: dict[str, Any] | None) -> bool:
@@ -314,20 +328,24 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             return {"statusCode": 400, "body": str(exc)}
 
         body_json = _parse_json_body(body_content)
+        if body_content and body_json is None:
+            logger.warning("Body JSON inválido (request_id=%s).", request_id)
+            response_status = 400
+            return {"statusCode": 400, "body": "Bad Request: Invalid JSON body"}
         logger.info(
             "EVENTO RECEBIDO: %s",
             json.dumps(_build_event_log_summary(event, headers_lower, body_json), ensure_ascii=False),
         )
 
-        url_verification_response = _handle_url_verification_if_present(body_json)
-        if url_verification_response:
-            response_status = int(url_verification_response.get("statusCode", 200))
-            return url_verification_response
-
         if not _is_valid_slack_request(headers_lower, body_content):
             logger.warning("Assinatura Slack inválida (request_id=%s).", request_id)
             response_status = 401
             return {"statusCode": 401, "body": "Invalid signature"}
+
+        url_verification_response = _handle_url_verification_if_present(body_json)
+        if url_verification_response:
+            response_status = int(url_verification_response.get("statusCode", 200))
+            return url_verification_response
 
         if not _is_app_mention_event(body_json):
             response_status = 200
@@ -353,7 +371,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         invoked_successfully = _invoke_worker_async(body_json, request_id)
         if not invoked_successfully:
             response_status = 500
-            return {"statusCode": 500, "body": "Failed to enqueue worker"}
+            return {"statusCode": 500, "body": "Internal Server Error"}
 
         response_status = 200
         tracked_event_success = True
