@@ -2,6 +2,7 @@
 Unit tests for Genie-only routing and Slack mention handling.
 """
 # pylint: disable=import-outside-toplevel
+import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -45,13 +46,13 @@ def test_process_question_routes_by_alias(mock_ask_genie):
     ):
         from data_slacklake.services.ai_service import process_question
 
-        resposta, sql = process_question("!RemessaGpt quanto operações tivemos esse ano?")
+        resposta, sql = process_question("!RemessaGpt quantas operações tivemos esse ano?")
 
     assert resposta == "Resposta Remessa"
     assert sql is None
     mock_ask_genie.assert_called_once_with(
         space_id="space-remessa",
-        pergunta="quanto operações tivemos esse ano?",
+        pergunta="quantas operações tivemos esse ano?",
         conversation_id=None,
     )
 
@@ -212,3 +213,160 @@ def test_app_mention_without_question_shows_usage(_mock_commands):
     message = mock_say.call_args[0][0]
     assert "Comandos configurados" in message
     assert "!remessagpt" in message
+
+
+def test_build_event_log_summary_redacts_sensitive_data():
+    """Resumo de logs não deve vazar token nem assinatura."""
+    from main import _build_event_log_summary, _lowercase_headers
+
+    event = {"httpMethod": "POST", "path": "/v1/data-slacklake/bot"}
+    headers = _lowercase_headers(
+        {
+            "User-Agent": "Slackbot 1.0",
+            "X-Slack-Request-Timestamp": "1770926438",
+            "X-Slack-Signature": "v0=abc123",
+            "X-Forwarded-For": "54.91.163.226",
+        }
+    )
+    body_json = {
+        "type": "event_callback",
+        "event_id": "Ev123",
+        "team_id": "TL3PXCH4L",
+        "token": "token-ultra-secreto",
+        "event": {
+            "type": "app_mention",
+            "user": "U1",
+            "channel": "C1",
+            "text": "<@BOT> segredo",
+            "ts": "123.456",
+        },
+    }
+
+    summary = _build_event_log_summary(event, headers, body_json)
+
+    assert summary["headers"]["x-slack-signature"] == "[REDACTED]"
+    assert summary["slack_event"]["event_id"] == "Ev123"
+    assert summary["slack_event"]["event_type"] == "app_mention"
+    assert "token-ultra-secreto" not in str(summary)
+
+
+def test_is_duplicate_slack_event_detects_in_flight_and_processed_states():
+    """Evita concorrência e duplicidade após evento concluído."""
+    from main import (
+        _SLACK_EVENT_STATES,
+        _finalize_slack_event_processing,
+        _is_duplicate_slack_event,
+    )
+
+    _SLACK_EVENT_STATES.clear()  # pylint: disable=protected-access
+    body_json = {"type": "event_callback", "event_id": "EvDup123", "event": {"type": "app_mention"}}
+
+    is_duplicate_first, event_id_first, duplicate_state_first = _is_duplicate_slack_event(body_json)
+    is_duplicate_second, event_id_second, duplicate_state_second = _is_duplicate_slack_event(body_json)
+
+    assert is_duplicate_first is False
+    assert event_id_first == "EvDup123"
+    assert duplicate_state_first is None
+
+    assert is_duplicate_second is True
+    assert event_id_second == "EvDup123"
+    assert duplicate_state_second == "in_flight"
+
+    _finalize_slack_event_processing("EvDup123", was_successful=True)
+    is_duplicate_third, event_id_third, duplicate_state_third = _is_duplicate_slack_event(body_json)
+    assert is_duplicate_third is True
+    assert event_id_third == "EvDup123"
+    assert duplicate_state_third == "processed"
+
+    _SLACK_EVENT_STATES.clear()  # pylint: disable=protected-access
+
+
+def test_failed_processing_releases_event_id_for_new_retry():
+    """Se processamento falhar, event_id volta a ficar elegível para retry."""
+    from main import (
+        _SLACK_EVENT_STATES,
+        _finalize_slack_event_processing,
+        _is_duplicate_slack_event,
+    )
+
+    _SLACK_EVENT_STATES.clear()  # pylint: disable=protected-access
+    body_json = {"type": "event_callback", "event_id": "EvRetry123", "event": {"type": "app_mention"}}
+
+    is_duplicate_first, _, _ = _is_duplicate_slack_event(body_json)
+    assert is_duplicate_first is False
+
+    _finalize_slack_event_processing("EvRetry123", was_successful=False)
+
+    is_duplicate_second, event_id_second, duplicate_state_second = _is_duplicate_slack_event(body_json)
+    assert is_duplicate_second is False
+    assert event_id_second == "EvRetry123"
+    assert duplicate_state_second is None
+
+    _SLACK_EVENT_STATES.clear()  # pylint: disable=protected-access
+
+
+@patch("main._invoke_worker_async")
+@patch("main._is_valid_slack_request", return_value=True)
+def test_handler_ignores_http_timeout_retry(_mock_signature, mock_invoke_worker):
+    """Retry por timeout é ignorado para evitar resposta duplicada."""
+    from main import handler
+
+    event = {
+        "httpMethod": "POST",
+        "path": "/v1/data-slacklake/bot",
+        "headers": {
+            "user-agent": "Slackbot 1.0 (+https://api.slack.com/robots)",
+            "x-slack-retry-num": "1",
+            "x-slack-retry-reason": "http_timeout",
+            "x-slack-signature": "v0=abc123",
+            "x-slack-request-timestamp": "1771004333",
+        },
+        "body": json.dumps(
+            {
+                "type": "event_callback",
+                "event_id": "EvRetryHttpTimeout1",
+                "team_id": "TL3PXCH4L",
+                "event": {"type": "app_mention", "user": "U1", "channel": "C1", "ts": "111.222", "text": "<@BOT> oi"},
+            }
+        ),
+        "isBase64Encoded": False,
+    }
+
+    context = type("LambdaContext", (), {"aws_request_id": "req-short-circuit"})()
+    with patch("main._SKIP_HTTP_TIMEOUT_RETRIES", True):
+        response = handler(event, context)
+
+    assert response["statusCode"] == 200
+    mock_invoke_worker.assert_not_called()
+
+
+@patch("main._invoke_worker_async", return_value=True)
+@patch("main._is_valid_slack_request", return_value=True)
+def test_ingress_enfileira_evento_no_worker(_mock_signature, mock_invoke_worker):
+    """Ingress deve invocar worker assíncrono para app_mention válido."""
+    from main import handler
+
+    event = {
+        "httpMethod": "POST",
+        "path": "/v1/data-slacklake/bot",
+        "headers": {
+            "user-agent": "Slackbot 1.0 (+https://api.slack.com/robots)",
+            "x-slack-signature": "v0=abc123",
+            "x-slack-request-timestamp": "1771004333",
+        },
+        "body": json.dumps(
+            {
+                "type": "event_callback",
+                "event_id": "EvIngressWorker1",
+                "team_id": "TL3PXCH4L",
+                "event": {"type": "app_mention", "user": "U1", "channel": "C1", "ts": "111.222", "text": "<@BOT> oi"},
+            }
+        ),
+        "isBase64Encoded": False,
+    }
+    context = type("LambdaContext", (), {"aws_request_id": "req-ingress-worker"})()
+
+    response = handler(event, context)
+
+    assert response["statusCode"] == 200
+    mock_invoke_worker.assert_called_once()
