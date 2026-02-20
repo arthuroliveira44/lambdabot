@@ -12,7 +12,43 @@ from typing import Any
 
 from databricks.sdk import WorkspaceClient
 
-from data_slacklake.config import DATABRICKS_HOST, DATABRICKS_TOKEN, logger
+from data_slacklake.config import (
+    DATABRICKS_CLIENT_ID,
+    DATABRICKS_CLIENT_SECRET,
+    DATABRICKS_HOST,
+    DATABRICKS_TOKEN,
+    logger,
+)
+
+
+def _resolve_databricks_auth_kwargs() -> tuple[dict[str, str], str]:
+    normalized_client_id = str(DATABRICKS_CLIENT_ID or "").strip()
+    normalized_client_secret = str(DATABRICKS_CLIENT_SECRET or "").strip()
+    normalized_token = str(DATABRICKS_TOKEN or "").strip()
+
+    # Preferir Service Principal quando disponível.
+    if normalized_client_id and normalized_client_secret:
+        return (
+            {
+                "client_id": normalized_client_id,
+                "client_secret": normalized_client_secret,
+            },
+            "service_principal",
+        )
+
+    if normalized_client_id or normalized_client_secret:
+        raise ValueError(
+            "Credenciais Databricks incompletas para Service Principal. "
+            "Defina ambos DATABRICKS_CLIENT_ID e DATABRICKS_CLIENT_SECRET."
+        )
+
+    if normalized_token:
+        return ({"token": normalized_token}, "pat")
+
+    raise ValueError(
+        "Credenciais Databricks não configuradas. "
+        "Defina DATABRICKS_CLIENT_ID/DATABRICKS_CLIENT_SECRET ou DATABRICKS_TOKEN."
+    )
 
 
 @lru_cache(maxsize=4)
@@ -20,9 +56,13 @@ def get_workspace_client() -> WorkspaceClient:
     """
     Cria cliente do Databricks SDK. Reusa em ambientes warm (Lambda).
     """
-    if not DATABRICKS_HOST or not DATABRICKS_TOKEN:
-        raise ValueError("DATABRICKS_HOST/DATABRICKS_TOKEN não configurados.")
-    return WorkspaceClient(host=DATABRICKS_HOST, token=DATABRICKS_TOKEN)
+    normalized_host = str(DATABRICKS_HOST or "").strip()
+    if not normalized_host:
+        raise ValueError("DATABRICKS_HOST não configurado.")
+
+    auth_kwargs, auth_mode = _resolve_databricks_auth_kwargs()
+    logger.info("Databricks auth mode selecionado para Genie: %s", auth_mode)
+    return WorkspaceClient(host=normalized_host, **auth_kwargs)
 
 
 def _extract_genie_response_parts(message: Any) -> tuple[str, str | None]:

@@ -91,6 +91,23 @@ SLACK_SIGNING_SECRET = _get_config_value(
 DATABRICKS_TOKEN = _get_config_value(
     env_var_names=("DATABRICKS_TOKEN",),
     ssm_param_names=("databricks_pat_token",),
+    required=False,
+)
+DATABRICKS_CLIENT_ID = _get_config_value(
+    env_var_names=("DATABRICKS_CLIENT_ID",),
+    ssm_param_names=(
+        "databricks_client_id",
+        "databricks_sp_client_id",  # Compatibilidade retroativa com nomenclatura antiga.
+    ),
+    required=False,
+)
+DATABRICKS_CLIENT_SECRET = _get_config_value(
+    env_var_names=("DATABRICKS_CLIENT_SECRET",),
+    ssm_param_names=(
+        "databricks_client_secret",
+        "databricks_sp_client_secret",  # Compatibilidade retroativa com nomenclatura antiga.
+    ),
+    required=False,
 )
 DATABRICKS_HOST = _get_config_value(
     env_var_names=("DATABRICKS_HOST",),
@@ -113,5 +130,11 @@ if DATABRICKS_HOST and not os.getenv("DATABRICKS_HOST"):
 
 if DATABRICKS_TOKEN and not os.getenv("DATABRICKS_TOKEN"):
     os.environ["DATABRICKS_TOKEN"] = DATABRICKS_TOKEN
+
+if DATABRICKS_CLIENT_ID and not os.getenv("DATABRICKS_CLIENT_ID"):
+    os.environ["DATABRICKS_CLIENT_ID"] = DATABRICKS_CLIENT_ID
+
+if DATABRICKS_CLIENT_SECRET and not os.getenv("DATABRICKS_CLIENT_SECRET"):
+    os.environ["DATABRICKS_CLIENT_SECRET"] = DATABRICKS_CLIENT_SECRET
 
 logger.info("Configurações carregadas e ambiente Databricks configurado para app_env=%s.", APP_ENV)
