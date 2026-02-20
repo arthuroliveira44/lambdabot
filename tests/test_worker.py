@@ -42,5 +42,5 @@ def test_worker_retorna_500_quando_falha(mock_process_event):
     response = handler(event, context={})
 
     assert response["statusCode"] == 500
-    assert "falha worker" in response["body"]
+    assert response["body"] == "Internal Server Error"
     mock_process_event.assert_called_once()

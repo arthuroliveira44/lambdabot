@@ -12,7 +12,43 @@ from typing import Any
 
 from databricks.sdk import WorkspaceClient
 
-from data_slacklake.config import DATABRICKS_HOST, DATABRICKS_TOKEN, logger
+from data_slacklake.config import (
+    DATABRICKS_CLIENT_ID,
+    DATABRICKS_CLIENT_SECRET,
+    DATABRICKS_HOST,
+    DATABRICKS_TOKEN,
+    logger,
+)
+
+
+def _resolve_databricks_auth_kwargs() -> tuple[dict[str, str], str]:
+    normalized_client_id = str(DATABRICKS_CLIENT_ID or "").strip()
+    normalized_client_secret = str(DATABRICKS_CLIENT_SECRET or "").strip()
+    normalized_token = str(DATABRICKS_TOKEN or "").strip()
+
+    # Preferir Service Principal quando disponível.
+    if normalized_client_id and normalized_client_secret:
+        return (
+            {
+                "client_id": normalized_client_id,
+                "client_secret": normalized_client_secret,
+            },
+            "service_principal",
+        )
+
+    if normalized_client_id or normalized_client_secret:
+        raise ValueError(
+            "Credenciais Databricks incompletas para Service Principal. "
+            "Defina ambos DATABRICKS_CLIENT_ID e DATABRICKS_CLIENT_SECRET."
+        )
+
+    if normalized_token:
+        return ({"token": normalized_token}, "pat")
+
+    raise ValueError(
+        "Credenciais Databricks não configuradas. "
+        "Defina DATABRICKS_CLIENT_ID/DATABRICKS_CLIENT_SECRET ou DATABRICKS_TOKEN."
+    )
 
 
 @lru_cache(maxsize=4)
@@ -20,20 +56,26 @@ def get_workspace_client() -> WorkspaceClient:
     """
     Cria cliente do Databricks SDK. Reusa em ambientes warm (Lambda).
     """
-    if not DATABRICKS_HOST or not DATABRICKS_TOKEN:
-        raise ValueError("DATABRICKS_HOST/DATABRICKS_TOKEN não configurados.")
-    return WorkspaceClient(host=DATABRICKS_HOST, token=DATABRICKS_TOKEN)
+    normalized_host = str(DATABRICKS_HOST or "").strip()
+    if not normalized_host:
+        raise ValueError("DATABRICKS_HOST não configurado.")
+
+    auth_kwargs, auth_mode = _resolve_databricks_auth_kwargs()
+    logger.info("Databricks auth mode selecionado para Genie: %s", auth_mode)
+    return WorkspaceClient(host=normalized_host, **auth_kwargs)
 
 
 def _extract_genie_response_parts(message: Any) -> tuple[str, str | None]:
     text_parts: list[str] = []
     sql_parts: list[str] = []
 
-    for attachment in message.attachments or []:
-        if attachment.text and attachment.text.content:
-            text_parts.append(attachment.text.content.strip())
-        if attachment.query and attachment.query.query:
-            sql_parts.append(attachment.query.query.strip())
+    for attachment in getattr(message, "attachments", None) or []:
+        attachment_text = getattr(getattr(attachment, "text", None), "content", None)
+        attachment_query = getattr(getattr(attachment, "query", None), "query", None)
+        if attachment_text:
+            text_parts.append(str(attachment_text).strip())
+        if attachment_query:
+            sql_parts.append(str(attachment_query).strip())
 
     response_text = "\n\n".join([part for part in text_parts if part]).strip()
     if not response_text:
@@ -54,22 +96,36 @@ def ask_genie(
     - sql_debug (string opcional, se Genie gerar query)
     - conversation_id (para encadear conversas, se desejado)
     """
+    normalized_space_id = str(space_id or "").strip()
+    if not normalized_space_id:
+        raise ValueError("space_id da Genie não pode ser vazio.")
+
+    normalized_question = str(pergunta or "").strip()
+    if not normalized_question:
+        raise ValueError("A pergunta para Genie não pode ser vazia.")
+
     workspace_client = get_workspace_client()
 
-    if conversation_id:
+    normalized_conversation_id = str(conversation_id or "").strip()
+    if normalized_conversation_id:
         message = workspace_client.genie.create_message_and_wait(
-            space_id=space_id,
-            conversation_id=conversation_id,
-            content=pergunta,
+            space_id=normalized_space_id,
+            conversation_id=normalized_conversation_id,
+            content=normalized_question,
         )
     else:
-        message = workspace_client.genie.start_conversation_and_wait(space_id=space_id, content=pergunta)
+        message = workspace_client.genie.start_conversation_and_wait(
+            space_id=normalized_space_id,
+            content=normalized_question,
+        )
 
-    if message.error:
+    message_error = getattr(message, "error", None)
+    if message_error:
         logger.warning(
             "Genie retornou erro: %s",
-            message.error.as_dict() if hasattr(message.error, "as_dict") else str(message.error),
+            message_error.as_dict() if hasattr(message_error, "as_dict") else str(message_error),
         )
 
     response_text, sql_debug = _extract_genie_response_parts(message)
-    return response_text, sql_debug, message.conversation_id
+    updated_conversation_id = str(getattr(message, "conversation_id", "")).strip() or None
+    return response_text, sql_debug, updated_conversation_id
