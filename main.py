@@ -242,11 +242,28 @@ def _is_valid_slack_request(headers_lower: dict[str, str], body_content: str) ->
         return False
 
 
-def _is_app_mention_event(body_json: dict[str, Any] | None) -> bool:
+def _is_direct_message_event(event_payload: dict[str, Any]) -> bool:
+    return event_payload.get("type") == "message" and event_payload.get("channel_type") == "im"
+
+
+def _is_supported_slack_user_event(body_json: dict[str, Any] | None) -> bool:
     if not body_json or body_json.get("type") != "event_callback":
         return False
+
     event_payload = body_json.get("event", {})
-    return isinstance(event_payload, dict) and event_payload.get("type") == "app_mention"
+    if not isinstance(event_payload, dict):
+        return False
+
+    event_type = str(event_payload.get("type", "")).strip()
+    is_supported_event_type = event_type == "app_mention" or _is_direct_message_event(event_payload)
+    if not is_supported_event_type:
+        return False
+
+    # Evita loops e eventos não textuais.
+    if event_payload.get("subtype") or event_payload.get("bot_id"):
+        return False
+
+    return bool(str(event_payload.get("user", "")).strip())
 
 
 def _invoke_worker_async(body_json: dict[str, Any], request_id: str) -> bool:
@@ -347,7 +364,8 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             response_status = int(url_verification_response.get("statusCode", 200))
             return url_verification_response
 
-        if not _is_app_mention_event(body_json):
+        if not _is_supported_slack_user_event(body_json):
+            logger.info("Evento Slack ignorado: tipo não suportado ou mensagem originada por bot.")
             response_status = 200
             return _ok_response()
 

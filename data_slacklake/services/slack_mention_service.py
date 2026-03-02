@@ -1,4 +1,4 @@
-"""Serviço de processamento de eventos app_mention do Slack."""
+"""Serviço de processamento de mensagens do Slack (app_mention e DM)."""
 
 from __future__ import annotations
 
@@ -46,7 +46,7 @@ def process_app_mention_event(
     event_payload: dict[str, Any],
     send_message: Callable[[str, str | None], Any],
 ) -> None:
-    """Processa um app_mention e envia respostas via callback de envio."""
+    """Processa mensagens suportadas do Slack e envia respostas via callback de envio."""
     message_text = str(event_payload.get("text", ""))
     user_id = str(event_payload.get("user", "Desconhecido")).strip() or "Desconhecido"
     event_ts = str(event_payload.get("ts", "")).strip()
