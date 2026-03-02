@@ -77,6 +77,18 @@ def _get_config_value(
     return None
 
 
+_OPTIONAL_PLACEHOLDER_VALUES = frozenset({"changeme", "change-me", "replace-me"})
+
+
+def _normalize_optional_value(raw_value: str | None) -> str | None:
+    normalized_value = str(raw_value or "").strip()
+    if not normalized_value:
+        return None
+    if normalized_value.lower() in _OPTIONAL_PLACEHOLDER_VALUES:
+        return None
+    return normalized_value
+
+
 SLACK_BOT_TOKEN = _get_config_value(
     env_var_names=("SLACK_BOT_TOKEN",),
     ssm_param_names=("slack_bot_token",),
@@ -88,26 +100,32 @@ SLACK_SIGNING_SECRET = _get_config_value(
         "slack_app_token",  # Compatibilidade retroativa com nome legado.
     ),
 )
-DATABRICKS_TOKEN = _get_config_value(
-    env_var_names=("DATABRICKS_TOKEN",),
-    ssm_param_names=("databricks_pat_token",),
-    required=False,
+DATABRICKS_TOKEN = _normalize_optional_value(
+    _get_config_value(
+        env_var_names=("DATABRICKS_TOKEN",),
+        ssm_param_names=("databricks_pat_token",),
+        required=False,
+    )
 )
-DATABRICKS_CLIENT_ID = _get_config_value(
-    env_var_names=("DATABRICKS_CLIENT_ID",),
-    ssm_param_names=(
-        "databricks_client_id",
-        "databricks_sp_client_id",  # Compatibilidade retroativa com nomenclatura antiga.
-    ),
-    required=False,
+DATABRICKS_CLIENT_ID = _normalize_optional_value(
+    _get_config_value(
+        env_var_names=("DATABRICKS_CLIENT_ID",),
+        ssm_param_names=(
+            "databricks_client_id",
+            "databricks_sp_client_id",  # Compatibilidade retroativa com nomenclatura antiga.
+        ),
+        required=False,
+    )
 )
-DATABRICKS_CLIENT_SECRET = _get_config_value(
-    env_var_names=("DATABRICKS_CLIENT_SECRET",),
-    ssm_param_names=(
-        "databricks_client_secret",
-        "databricks_sp_client_secret",  # Compatibilidade retroativa com nomenclatura antiga.
-    ),
-    required=False,
+DATABRICKS_CLIENT_SECRET = _normalize_optional_value(
+    _get_config_value(
+        env_var_names=("DATABRICKS_CLIENT_SECRET",),
+        ssm_param_names=(
+            "databricks_client_secret",
+            "databricks_sp_client_secret",  # Compatibilidade retroativa com nomenclatura antiga.
+        ),
+        required=False,
+    )
 )
 DATABRICKS_HOST = _get_config_value(
     env_var_names=("DATABRICKS_HOST",),
@@ -128,7 +146,11 @@ GENIE_BOT_SPACE_MAP = (os.getenv("GENIE_BOT_SPACE_MAP") or os.getenv("GENIE_SPAC
 if DATABRICKS_HOST and not os.getenv("DATABRICKS_HOST"):
     os.environ["DATABRICKS_HOST"] = DATABRICKS_HOST
 
-if DATABRICKS_TOKEN and not os.getenv("DATABRICKS_TOKEN"):
+if (
+    DATABRICKS_TOKEN
+    and not os.getenv("DATABRICKS_TOKEN")
+    and not (DATABRICKS_CLIENT_ID and DATABRICKS_CLIENT_SECRET)
+):
     os.environ["DATABRICKS_TOKEN"] = DATABRICKS_TOKEN
 
 if DATABRICKS_CLIENT_ID and not os.getenv("DATABRICKS_CLIENT_ID"):

@@ -7,6 +7,7 @@ para responder perguntas, com retorno textual (e SQL opcional) sem estourar toke
 
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from typing import Any
 
@@ -51,6 +52,17 @@ def _resolve_databricks_auth_kwargs() -> tuple[dict[str, str], str]:
     )
 
 
+def _clear_conflicting_databricks_env(auth_mode: str) -> None:
+    if auth_mode != "service_principal":
+        return
+
+    # O SDK do Databricks também lê variáveis de ambiente.
+    # Se PAT estiver presente junto com OAuth M2M, ele falha por configuração ambígua.
+    for env_var_name in ("DATABRICKS_TOKEN",):
+        if os.getenv(env_var_name):
+            os.environ.pop(env_var_name, None)
+
+
 @lru_cache(maxsize=4)
 def get_workspace_client() -> WorkspaceClient:
     """
@@ -61,6 +73,7 @@ def get_workspace_client() -> WorkspaceClient:
         raise ValueError("DATABRICKS_HOST não configurado.")
 
     auth_kwargs, auth_mode = _resolve_databricks_auth_kwargs()
+    _clear_conflicting_databricks_env(auth_mode)
     logger.info("Databricks auth mode selecionado para Genie: %s", auth_mode)
     return WorkspaceClient(host=normalized_host, **auth_kwargs)
 
