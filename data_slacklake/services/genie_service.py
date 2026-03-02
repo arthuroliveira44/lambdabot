@@ -29,11 +29,13 @@ def _extract_genie_response_parts(message: Any) -> tuple[str, str | None]:
     text_parts: list[str] = []
     sql_parts: list[str] = []
 
-    for attachment in message.attachments or []:
-        if attachment.text and attachment.text.content:
-            text_parts.append(attachment.text.content.strip())
-        if attachment.query and attachment.query.query:
-            sql_parts.append(attachment.query.query.strip())
+    for attachment in getattr(message, "attachments", None) or []:
+        attachment_text = getattr(getattr(attachment, "text", None), "content", None)
+        attachment_query = getattr(getattr(attachment, "query", None), "query", None)
+        if attachment_text:
+            text_parts.append(str(attachment_text).strip())
+        if attachment_query:
+            sql_parts.append(str(attachment_query).strip())
 
     response_text = "\n\n".join([part for part in text_parts if part]).strip()
     if not response_text:
@@ -54,22 +56,36 @@ def ask_genie(
     - sql_debug (string opcional, se Genie gerar query)
     - conversation_id (para encadear conversas, se desejado)
     """
+    normalized_space_id = str(space_id or "").strip()
+    if not normalized_space_id:
+        raise ValueError("space_id da Genie não pode ser vazio.")
+
+    normalized_question = str(pergunta or "").strip()
+    if not normalized_question:
+        raise ValueError("A pergunta para Genie não pode ser vazia.")
+
     workspace_client = get_workspace_client()
 
-    if conversation_id:
+    normalized_conversation_id = str(conversation_id or "").strip()
+    if normalized_conversation_id:
         message = workspace_client.genie.create_message_and_wait(
-            space_id=space_id,
-            conversation_id=conversation_id,
-            content=pergunta,
+            space_id=normalized_space_id,
+            conversation_id=normalized_conversation_id,
+            content=normalized_question,
         )
     else:
-        message = workspace_client.genie.start_conversation_and_wait(space_id=space_id, content=pergunta)
+        message = workspace_client.genie.start_conversation_and_wait(
+            space_id=normalized_space_id,
+            content=normalized_question,
+        )
 
-    if message.error:
+    message_error = getattr(message, "error", None)
+    if message_error:
         logger.warning(
             "Genie retornou erro: %s",
-            message.error.as_dict() if hasattr(message.error, "as_dict") else str(message.error),
+            message_error.as_dict() if hasattr(message_error, "as_dict") else str(message_error),
         )
 
     response_text, sql_debug = _extract_genie_response_parts(message)
-    return response_text, sql_debug, message.conversation_id
+    updated_conversation_id = str(getattr(message, "conversation_id", "")).strip() or None
+    return response_text, sql_debug, updated_conversation_id

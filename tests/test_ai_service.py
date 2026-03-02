@@ -305,6 +305,30 @@ def test_failed_processing_releases_event_id_for_new_retry():
     _SLACK_EVENT_STATES.clear()  # pylint: disable=protected-access
 
 
+@patch("main._is_valid_slack_request", return_value=False)
+def test_url_verification_requer_assinatura_valida(_mock_signature):
+    """Mesmo no handshake de URL verification, a assinatura deve ser validada."""
+    from main import handler
+
+    event = {
+        "httpMethod": "POST",
+        "path": "/v1/data-slacklake/bot",
+        "headers": {
+            "user-agent": "Slackbot 1.0 (+https://api.slack.com/robots)",
+            "x-slack-signature": "v0=assinatura-invalida",
+            "x-slack-request-timestamp": "1771004333",
+        },
+        "body": json.dumps({"type": "url_verification", "challenge": "abc123"}),
+        "isBase64Encoded": False,
+    }
+    context = type("LambdaContext", (), {"aws_request_id": "req-url-verification-invalid-sign"})()
+
+    response = handler(event, context)
+
+    assert response["statusCode"] == 401
+    assert response["body"] == "Invalid signature"
+
+
 @patch("main._invoke_worker_async")
 @patch("main._is_valid_slack_request", return_value=True)
 def test_handler_ignores_http_timeout_retry(_mock_signature, mock_invoke_worker):
@@ -370,3 +394,46 @@ def test_ingress_enfileira_evento_no_worker(_mock_signature, mock_invoke_worker)
 
     assert response["statusCode"] == 200
     mock_invoke_worker.assert_called_once()
+
+
+@patch("main._is_valid_slack_request", return_value=True)
+def test_handler_retorna_400_quando_json_do_body_e_invalido(_mock_signature):
+    """Body inválido deve retornar 400 sem tentar processar evento."""
+    from main import handler
+
+    event = {
+        "httpMethod": "POST",
+        "path": "/v1/data-slacklake/bot",
+        "headers": {
+            "user-agent": "Slackbot 1.0 (+https://api.slack.com/robots)",
+            "x-slack-signature": "v0=abc123",
+            "x-slack-request-timestamp": "1771004333",
+        },
+        "body": '{"type": "event_callback",',
+        "isBase64Encoded": False,
+    }
+    context = type("LambdaContext", (), {"aws_request_id": "req-invalid-json"})()
+
+    response = handler(event, context)
+
+    assert response["statusCode"] == 400
+    assert "Invalid JSON body" in response["body"]
+
+
+def test_handler_retorna_400_quando_body_nao_e_string():
+    """Body com tipo inesperado deve ser rejeitado como bad request."""
+    from main import handler
+
+    event = {
+        "httpMethod": "POST",
+        "path": "/v1/data-slacklake/bot",
+        "headers": {"user-agent": "Slackbot 1.0 (+https://api.slack.com/robots)"},
+        "body": {"unexpected": "dict"},
+        "isBase64Encoded": False,
+    }
+    context = type("LambdaContext", (), {"aws_request_id": "req-invalid-body-type"})()
+
+    response = handler(event, context)
+
+    assert response["statusCode"] == 400
+    assert "Body must be a string" in response["body"]

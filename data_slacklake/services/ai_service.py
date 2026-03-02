@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import time
+from functools import lru_cache
 from threading import Lock
 from typing import Any
 
@@ -75,6 +76,7 @@ def _normalize_alias(alias: str) -> str:
     return normalized_alias
 
 
+@lru_cache(maxsize=16)
 def _parse_genie_bot_map(raw_mapping: str | None) -> dict[str, str]:
     raw = (raw_mapping or "").strip()
     if not raw:
@@ -106,7 +108,7 @@ def list_configured_genie_commands() -> list[str]:
 
 
 def _extract_alias_and_question(question: str) -> tuple[str | None, str]:
-    normalized_question = (question or "").strip()
+    normalized_question = str(question or "").strip()
     if not normalized_question:
         return None, ""
 
@@ -173,9 +175,9 @@ def _resolve_genie_target(question: str) -> tuple[str | None, str | None, str | 
     return selected_space_id, clean_question, None
 
 
-def process_question(pergunta: str, conversation_key: str | None = None) -> tuple[str, str | None]:
+def process_question(question: str, conversation_key: str | None = None) -> tuple[str, str | None]:
     """Roteia toda pergunta para o Databricks Genie."""
-    space_id, clean_question, error_message = _resolve_genie_target(pergunta)
+    space_id, clean_question, error_message = _resolve_genie_target(question)
     if error_message:
         return error_message, None
     if not space_id or clean_question is None:
@@ -190,8 +192,8 @@ def process_question(pergunta: str, conversation_key: str | None = None) -> tupl
             conversation_id=genie_conversation_id,
         )
     except Exception as exc:
-        logger.warning("Falha ao consultar Genie: %s", exc)
-        return f"Falha ao consultar Genie: {str(exc)}", None
+        logger.warning("Falha ao consultar Genie: %s", exc, exc_info=True)
+        return "Falha ao consultar Genie no momento. Tente novamente em instantes.", None
 
     _set_genie_conversation_id(conversation_key, space_id, updated_conversation_id)
     final_answer = (answer_text or "").strip() or "A Genie não retornou uma resposta textual."

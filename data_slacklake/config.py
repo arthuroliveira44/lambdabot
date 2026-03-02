@@ -43,17 +43,16 @@ def get_ssm_param(prefix: str, param_name: str, required: bool = True) -> str | 
 
 
 SLACK_BOT_TOKEN = get_ssm_param(SSM_PREFIX, "slack_bot_token")
-SLACK_SIGNING_SECRET = get_ssm_param(SSM_PREFIX,"slack_app_token")
+SLACK_SIGNING_SECRET =  get_ssm_param(SSM_PREFIX, "slack_app_token")
 DATABRICKS_TOKEN = get_ssm_param(SSM_PREFIX, "databricks_pat_token")
 DATABRICKS_HOST = get_ssm_param(SSM_PREFIX, "databricks_url")
 DATABRICKS_HTTP_PATH = get_ssm_param(SSM_PREFIX, "databricks_http_path")
 
-# Genie padrão usada quando o usuário não informar comando (!nome).
-GENIE_SPACE_ID = os.getenv("GENIE_SPACE_ID", "01f105e3c99e1527b3cb9bd0f5418626")
-
 # Mapeamento de aliases para Space IDs.
-# Exemplo: {"!remessagpt": "space-1", "!remessafin": "space-2", "!marketing": "space-3"}
-GENIE_BOT_SPACE_MAP = os.getenv("GENIE_BOT_SPACE_MAP") or os.getenv("GENIE_SPACE_MAP", "")
+# Exemplo: {"!remessagpt": "space-id1", "!operai": "space-id2", "!marketing": "space-id3"}
+GENIE_SPACE_ID = get_ssm_param(SSM_PREFIX, "genie_space_id")
+GENIE_BOT_SPACE_MAP = get_ssm_param(SSM_PREFIX, "genie_bot_space_map")
+
 
 if DATABRICKS_HOST:
     os.environ["DATABRICKS_HOST"] = DATABRICKS_HOST
