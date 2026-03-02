@@ -175,6 +175,11 @@ def _resolve_genie_target(question: str) -> tuple[str | None, str | None, str | 
     return selected_space_id, clean_question, None
 
 
+def _is_space_not_found_error(error_message: str) -> bool:
+    normalized_error = (error_message or "").strip().lower()
+    return "unable to get space" in normalized_error or "does not exist" in normalized_error
+
+
 def process_question(question: str, conversation_key: str | None = None) -> tuple[str, str | None]:
     """Roteia toda pergunta para o Databricks Genie."""
     space_id, clean_question, error_message = _resolve_genie_target(question)
@@ -193,6 +198,12 @@ def process_question(question: str, conversation_key: str | None = None) -> tupl
         )
     except Exception as exc:
         logger.warning("Falha ao consultar Genie: %s", exc, exc_info=True)
+        if _is_space_not_found_error(str(exc)):
+            return (
+                "A Genie configurada não foi encontrada neste ambiente. "
+                "Revise GENIE_SPACE_ID/GENIE_BOT_SPACE_MAP no SSM ou variáveis de ambiente.",
+                None,
+            )
         return "Falha ao consultar Genie no momento. Tente novamente em instantes.", None
 
     _set_genie_conversation_id(conversation_key, space_id, updated_conversation_id)

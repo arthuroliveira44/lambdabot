@@ -75,6 +75,21 @@ def test_process_question_unknown_alias_returns_help(mock_ask_genie):
     mock_ask_genie.assert_not_called()
 
 
+@patch("data_slacklake.services.ai_service.ask_genie", side_effect=RuntimeError("Unable to get space [abc]. does not exist"))
+def test_process_question_retorna_mensagem_clara_quando_space_nao_existe(_mock_ask_genie):
+    """Quando o space não existe no ambiente, deve orientar revisão de configuração."""
+    with patch("data_slacklake.services.ai_service.GENIE_SPACE_ID", "space-default"), patch(
+        "data_slacklake.services.ai_service.GENIE_BOT_SPACE_MAP", ""
+    ):
+        from data_slacklake.services.ai_service import process_question
+
+        resposta, sql = process_question("Qual o total?")
+
+    assert "não foi encontrada neste ambiente" in resposta
+    assert "GENIE_SPACE_ID" in resposta
+    assert sql is None
+
+
 @patch("data_slacklake.services.ai_service.ask_genie")
 def test_process_question_requires_alias_without_default_space(mock_ask_genie):
     """Exige !alias quando não existe Genie padrão definida."""

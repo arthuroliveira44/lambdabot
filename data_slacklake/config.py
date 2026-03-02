@@ -137,11 +137,25 @@ DATABRICKS_HTTP_PATH = _get_config_value(
 )
 
 # Genie padrão usada quando o usuário não informar comando (!nome).
-GENIE_SPACE_ID = os.getenv("GENIE_SPACE_ID", "01f105e3c99e1527b3cb9bd0f5418626").strip()
+GENIE_SPACE_ID = str(
+    _get_config_value(
+        env_var_names=("GENIE_SPACE_ID",),
+        ssm_param_names=("genie_space_id",),
+        required=False,
+    )
+    or ""
+).strip()
 
 # Mapeamento de aliases para Space IDs.
 # Exemplo: {"!remessagpt": "space-1", "!remessafin": "space-2", "!marketing": "space-3"}
-GENIE_BOT_SPACE_MAP = (os.getenv("GENIE_BOT_SPACE_MAP") or os.getenv("GENIE_SPACE_MAP", "")).strip()
+GENIE_BOT_SPACE_MAP = str(
+    _get_config_value(
+        env_var_names=("GENIE_BOT_SPACE_MAP", "GENIE_SPACE_MAP"),
+        ssm_param_names=("genie_bot_space_map", "genie_space_map"),
+        required=False,
+    )
+    or ""
+).strip()
 
 if DATABRICKS_HOST and not os.getenv("DATABRICKS_HOST"):
     os.environ["DATABRICKS_HOST"] = DATABRICKS_HOST
