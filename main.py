@@ -157,10 +157,8 @@ def _claim_event_processing(event_id: str) -> tuple[bool, str | None]:
         return False, None
 
 
-def _should_short_circuit_retry(headers_lower: dict[str, str], body_json: dict[str, Any] | None) -> bool:
+def _should_short_circuit_retry(headers_lower: dict[str, str]) -> bool:
     if not _SKIP_HTTP_TIMEOUT_RETRIES:
-        return False
-    if not body_json or body_json.get("type") != "event_callback":
         return False
     if "x-slack-retry-num" not in headers_lower:
         return False
@@ -201,11 +199,16 @@ def _handle_url_verification_if_present(body_json: dict[str, Any] | None) -> dic
     if body_json.get("type") != "url_verification":
         return None
 
+    challenge = str(body_json.get("challenge", "")).strip()
+    if not challenge:
+        logger.warning("url_verification recebido sem challenge.")
+        return {"statusCode": 400, "body": "Bad Request: Missing challenge"}
+
     logger.info("Detectado url_verification. Respondendo manualmente.")
     return {
         "statusCode": 200,
         "headers": {"Content-Type": "application/json"},
-        "body": json.dumps({"challenge": body_json["challenge"]}),
+        "body": json.dumps({"challenge": challenge}),
     }
 
 
@@ -369,7 +372,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             response_status = 200
             return _ok_response()
 
-        if _should_short_circuit_retry(headers_lower, body_json):
+        if _should_short_circuit_retry(headers_lower):
             logger.info(
                 "Retry http_timeout ignorado para evitar duplicidade (event_id=%s).",
                 str((body_json or {}).get("event_id", "")).strip() or "unknown",

@@ -379,6 +379,30 @@ def test_handler_ignores_http_timeout_retry(_mock_signature, mock_invoke_worker)
     mock_invoke_worker.assert_not_called()
 
 
+@patch("main._is_valid_slack_request", return_value=True)
+def test_url_verification_sem_challenge_retorna_400(_mock_signature):
+    """url_verification inválido sem challenge deve retornar bad request."""
+    from main import handler
+
+    event = {
+        "httpMethod": "POST",
+        "path": "/v1/data-slacklake/bot",
+        "headers": {
+            "user-agent": "Slackbot 1.0 (+https://api.slack.com/robots)",
+            "x-slack-signature": "v0=assinatura-valida",
+            "x-slack-request-timestamp": "1771004333",
+        },
+        "body": json.dumps({"type": "url_verification"}),
+        "isBase64Encoded": False,
+    }
+    context = type("LambdaContext", (), {"aws_request_id": "req-url-verification-no-challenge"})()
+
+    response = handler(event, context)
+
+    assert response["statusCode"] == 400
+    assert response["body"] == "Bad Request: Missing challenge"
+
+
 @patch("main._invoke_worker_async", return_value=True)
 @patch("main._is_valid_slack_request", return_value=True)
 def test_ingress_enfileira_evento_no_worker(_mock_signature, mock_invoke_worker):
