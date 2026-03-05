@@ -12,10 +12,13 @@ import pytest
 def clear_conversation_state():
     """Limpa estado global de conversa entre testes."""
     from data_slacklake.services import ai_service
+    from data_slacklake.services import slack_mention_service
 
     ai_service._CONVERSATION_STATE.clear()  # pylint: disable=protected-access
+    slack_mention_service._GREETING_STATE.clear()  # pylint: disable=protected-access
     yield
     ai_service._CONVERSATION_STATE.clear()  # pylint: disable=protected-access
+    slack_mention_service._GREETING_STATE.clear()  # pylint: disable=protected-access
 
 
 @patch("data_slacklake.services.ai_service.ask_genie")
@@ -190,6 +193,34 @@ def test_app_mention_success(mock_process):
     debug_call = mock_say.call_args_list[-1]
     assert "SELECT * FROM debug" in debug_call[0][0]
     assert debug_call[1]["thread_ts"] == "12345.6789"
+
+
+@patch("data_slacklake.services.ai_service.process_question")
+def test_app_mention_envia_saudacao_apenas_na_primeira_interacao(mock_process):
+    """Saudação de consulta deve aparecer só na primeira mensagem da conversa em memória."""
+    mock_process.return_value = ("Resposta Final da IA", None)
+
+    mock_say = MagicMock()
+    event_body = {
+        "event": {
+            "text": "<@BOT_ID> quais os dados?",
+            "user": "USER_ID",
+            "channel": "C123",
+            "ts": "12345.6789",
+        }
+    }
+
+    from main import handle_app_mentions
+
+    handle_app_mentions(event_body, mock_say)
+    handle_app_mentions(event_body, mock_say)
+
+    greeting_calls = [
+        call
+        for call in mock_say.call_args_list
+        if call.args and call.args[0] == "Olá <@USER_ID>! Consultando a Genie..."
+    ]
+    assert len(greeting_calls) == 1
 
 
 @patch("data_slacklake.services.ai_service.process_question")
