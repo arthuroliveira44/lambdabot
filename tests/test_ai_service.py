@@ -396,6 +396,85 @@ def test_ingress_enfileira_evento_no_worker(_mock_signature, mock_invoke_worker)
     mock_invoke_worker.assert_called_once()
 
 
+@patch("main._invoke_worker_async", return_value=True)
+@patch("main._is_valid_slack_request", return_value=True)
+def test_ingress_enfileira_message_im_no_worker(_mock_signature, mock_invoke_worker):
+    """Ingress deve enfileirar mensagem direta (message.im) de usuário."""
+    from main import handler
+
+    event = {
+        "httpMethod": "POST",
+        "path": "/v1/data-slacklake/bot",
+        "headers": {
+            "user-agent": "Slackbot 1.0 (+https://api.slack.com/robots)",
+            "x-slack-signature": "v0=abc123",
+            "x-slack-request-timestamp": "1771004333",
+        },
+        "body": json.dumps(
+            {
+                "type": "event_callback",
+                "event_id": "EvIngressDM1",
+                "team_id": "TL3PXCH4L",
+                "event": {
+                    "type": "message",
+                    "channel_type": "im",
+                    "user": "U1",
+                    "channel": "D1",
+                    "ts": "111.333",
+                    "text": "oi no privado",
+                },
+            }
+        ),
+        "isBase64Encoded": False,
+    }
+    context = type("LambdaContext", (), {"aws_request_id": "req-ingress-dm-worker"})()
+
+    response = handler(event, context)
+
+    assert response["statusCode"] == 200
+    mock_invoke_worker.assert_called_once()
+
+
+@patch("main._invoke_worker_async", return_value=True)
+@patch("main._is_valid_slack_request", return_value=True)
+def test_ingress_ignora_message_im_de_bot(_mock_signature, mock_invoke_worker):
+    """Ingress deve ignorar message.im de bot para evitar loops de resposta."""
+    from main import handler
+
+    event = {
+        "httpMethod": "POST",
+        "path": "/v1/data-slacklake/bot",
+        "headers": {
+            "user-agent": "Slackbot 1.0 (+https://api.slack.com/robots)",
+            "x-slack-signature": "v0=abc123",
+            "x-slack-request-timestamp": "1771004333",
+        },
+        "body": json.dumps(
+            {
+                "type": "event_callback",
+                "event_id": "EvIngressDMBot1",
+                "team_id": "TL3PXCH4L",
+                "event": {
+                    "type": "message",
+                    "channel_type": "im",
+                    "subtype": "bot_message",
+                    "bot_id": "B1",
+                    "channel": "D1",
+                    "ts": "111.444",
+                    "text": "resposta do bot",
+                },
+            }
+        ),
+        "isBase64Encoded": False,
+    }
+    context = type("LambdaContext", (), {"aws_request_id": "req-ingress-dm-bot"})()
+
+    response = handler(event, context)
+
+    assert response["statusCode"] == 200
+    mock_invoke_worker.assert_not_called()
+
+
 @patch("main._is_valid_slack_request", return_value=True)
 def test_handler_retorna_400_quando_json_do_body_e_invalido(_mock_signature):
     """Body inválido deve retornar 400 sem tentar processar evento."""

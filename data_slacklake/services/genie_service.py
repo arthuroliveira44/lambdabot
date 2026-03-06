@@ -12,7 +12,12 @@ from typing import Any
 
 from databricks.sdk import WorkspaceClient
 
-from data_slacklake.config import DATABRICKS_HOST, DATABRICKS_TOKEN, logger
+from data_slacklake.config import (
+    DATABRICKS_CLIENT_ID,
+    DATABRICKS_CLIENT_SECRET,
+    DATABRICKS_HOST,
+    logger,
+)
 
 
 @lru_cache(maxsize=4)
@@ -20,9 +25,13 @@ def get_workspace_client() -> WorkspaceClient:
     """
     Cria cliente do Databricks SDK. Reusa em ambientes warm (Lambda).
     """
-    if not DATABRICKS_HOST or not DATABRICKS_TOKEN:
-        raise ValueError("DATABRICKS_HOST/DATABRICKS_TOKEN não configurados.")
-    return WorkspaceClient(host=DATABRICKS_HOST, token=DATABRICKS_TOKEN)
+    if not all([DATABRICKS_HOST, DATABRICKS_CLIENT_ID, DATABRICKS_CLIENT_SECRET]):
+        raise ValueError(
+            "Configuração incompleta. Certifique-se de definir: "
+            "DATABRICKS_HOST, DATABRICKS_CLIENT_ID e DATABRICKS_CLIENT_SECRET."
+        )
+
+    return WorkspaceClient(host=DATABRICKS_HOST, client_id=DATABRICKS_CLIENT_ID, client_secret=DATABRICKS_CLIENT_SECRET)
 
 
 def _extract_genie_response_parts(message: Any) -> tuple[str, str | None]:

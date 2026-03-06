@@ -44,9 +44,10 @@ def get_ssm_param(prefix: str, param_name: str, required: bool = True) -> str | 
 
 SLACK_BOT_TOKEN = get_ssm_param(SSM_PREFIX, "slack_bot_token")
 SLACK_SIGNING_SECRET =  get_ssm_param(SSM_PREFIX, "slack_app_token")
-DATABRICKS_TOKEN = get_ssm_param(SSM_PREFIX, "databricks_pat_token")
 DATABRICKS_HOST = get_ssm_param(SSM_PREFIX, "databricks_url")
 DATABRICKS_HTTP_PATH = get_ssm_param(SSM_PREFIX, "databricks_http_path")
+DATABRICKS_CLIENT_ID = get_ssm_param(SSM_PREFIX, "databricks_client_id")
+DATABRICKS_CLIENT_SECRET = get_ssm_param(SSM_PREFIX, "databricks_client_secret")
 
 # Mapeamento de aliases para Space IDs.
 # Exemplo: {"!remessagpt": "space-id1", "!operai": "space-id2", "!marketing": "space-id3"}
@@ -56,8 +57,5 @@ GENIE_BOT_SPACE_MAP = get_ssm_param(SSM_PREFIX, "genie_bot_space_map")
 
 if DATABRICKS_HOST:
     os.environ["DATABRICKS_HOST"] = DATABRICKS_HOST
-
-if DATABRICKS_TOKEN:
-    os.environ["DATABRICKS_TOKEN"] = DATABRICKS_TOKEN
 
 logger.info("Configurações carregadas e ambiente Databricks configurado.")
