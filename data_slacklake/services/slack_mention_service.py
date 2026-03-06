@@ -30,8 +30,6 @@ def _build_conversation_key(event_payload: dict[str, Any]) -> str:
 def _build_requester_identity(event_payload: dict[str, Any]) -> str | None:
     user_id = str(event_payload.get("user") or "").strip()
     user_name = str(event_payload.get("username") or event_payload.get("user_name") or "").strip()
-    if user_name and user_id:
-        return f"{user_name} ({user_id})"
     if user_name:
         return user_name
     if user_id:

@@ -220,6 +220,33 @@ def test_app_mention_success(mock_process):
 
 
 @patch("data_slacklake.services.ai_service.process_question")
+def test_app_mention_prioriza_nome_para_auditoria(mock_process):
+    """Quando nome do usuário estiver disponível, deve usar nome no requester_identity."""
+    mock_process.return_value = ("Resposta Final da IA", None)
+
+    mock_say = MagicMock()
+    event_body = {
+        "event": {
+            "text": "<@BOT_ID> consulta com nome",
+            "user": "USER_ID",
+            "username": "Arthur Oliveira",
+            "channel": "C123",
+            "ts": "12345.6789",
+        }
+    }
+
+    from main import handle_app_mentions
+
+    handle_app_mentions(event_body, mock_say)
+
+    mock_process.assert_called_with(
+        "consulta com nome",
+        conversation_key="slack:C123:12345.6789:USER_ID",
+        requester_identity="Arthur Oliveira",
+    )
+
+
+@patch("data_slacklake.services.ai_service.process_question")
 def test_app_mention_envia_saudacao_apenas_na_primeira_interacao(mock_process):
     """Saudação de consulta deve aparecer só na primeira mensagem da conversa em memória."""
     mock_process.return_value = ("Resposta Final da IA", None)
