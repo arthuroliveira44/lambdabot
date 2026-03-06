@@ -1,6 +1,4 @@
 import logging
-import time
-from threading import Lock
 from typing import Any
 
 from slack_sdk import WebClient
@@ -19,26 +17,12 @@ def _configure_logger() -> logging.Logger:
 
 logger = _configure_logger()
 slack_client = WebClient(token=SLACK_BOT_TOKEN)
-USER_PROFILE_TTL_SECONDS = 60 * 60
-_USER_PROFILE_CACHE: dict[str, dict[str, Any]] = {}
-_USER_PROFILE_CACHE_LOCK = Lock()
 
 
 def _send_message(channel_id: str, text: str, thread_ts: str | None = None) -> None:
     if not channel_id:
         raise ValueError("channel_id ausente para envio da mensagem no Slack.")
     slack_client.chat_postMessage(channel=channel_id, text=text, thread_ts=thread_ts)
-
-
-def _prune_user_profile_cache(now_timestamp: float) -> None:
-    expiration_limit = now_timestamp - USER_PROFILE_TTL_SECONDS
-    expired_user_ids = [
-        user_id
-        for user_id, state in _USER_PROFILE_CACHE.items()
-        if float(state.get("updated_at", 0.0)) < expiration_limit
-    ]
-    for user_id in expired_user_ids:
-        _USER_PROFILE_CACHE.pop(user_id, None)
 
 
 def _extract_user_display_name_from_profile(profile: dict[str, Any]) -> str | None:
@@ -54,16 +38,6 @@ def _get_slack_user_display_name(user_id: str) -> str | None:
     if not normalized_user_id:
         return None
 
-    now_timestamp = time.time()
-    with _USER_PROFILE_CACHE_LOCK:
-        _prune_user_profile_cache(now_timestamp)
-        cached_state = _USER_PROFILE_CACHE.get(normalized_user_id)
-        if cached_state:
-            cached_name = str(cached_state.get("display_name") or "").strip()
-            if cached_name:
-                cached_state["updated_at"] = now_timestamp
-                return cached_name
-
     try:
         response = slack_client.users_info(user=normalized_user_id)
     except Exception as exc:
@@ -77,10 +51,6 @@ def _get_slack_user_display_name(user_id: str) -> str | None:
         display_name = str(user_data.get("name") or "").strip() if isinstance(user_data, dict) else ""
     if not display_name:
         return None
-
-    with _USER_PROFILE_CACHE_LOCK:
-        _prune_user_profile_cache(now_timestamp)
-        _USER_PROFILE_CACHE[normalized_user_id] = {"display_name": display_name, "updated_at": now_timestamp}
     return display_name
 
 
