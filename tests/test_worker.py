@@ -1,8 +1,9 @@
 """Testes unitários para o Lambda worker."""
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
-from worker import handler
+from worker import _get_slack_user_display_name, handler
 
 
 @patch("worker.process_app_mention_event")
@@ -26,6 +27,24 @@ def test_worker_processa_evento_de_app_mention(_mock_get_user_name, mock_process
     mock_process_event.assert_called_once()
     payload_enviado = mock_process_event.call_args.args[0]
     assert payload_enviado["username"] == "Arthur Oliveira"
+
+
+def test_get_slack_user_display_name_suporta_resposta_slackresponse():
+    """Deve extrair nome quando users_info retorna objeto com atributo data."""
+    fake_response = SimpleNamespace(
+        data={
+            "user": {
+                "profile": {
+                    "display_name_normalized": "Arthur Oliveira",
+                }
+            }
+        }
+    )
+
+    with patch("worker.slack_client.users_info", return_value=fake_response):
+        display_name = _get_slack_user_display_name("U123")
+
+    assert display_name == "Arthur Oliveira"
 
 
 @patch("worker.process_app_mention_event", side_effect=RuntimeError("falha worker"))

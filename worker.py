@@ -1,4 +1,5 @@
 import logging
+from collections.abc import Mapping
 from typing import Any
 
 from slack_sdk import WebClient
@@ -44,8 +45,16 @@ def _get_slack_user_display_name(user_id: str) -> str | None:
         logger.warning("Falha ao buscar nome do usuário Slack (%s): %s", normalized_user_id, exc)
         return None
 
-    user_data = response.get("user") if isinstance(response, dict) else {}
-    profile = user_data.get("profile") if isinstance(user_data, dict) else {}
+    response_data: dict[str, Any] = {}
+    if isinstance(response, Mapping):
+        response_data = dict(response)
+    else:
+        raw_data = getattr(response, "data", None)
+        if isinstance(raw_data, Mapping):
+            response_data = dict(raw_data)
+
+    user_data = response_data.get("user") if isinstance(response_data.get("user"), Mapping) else {}
+    profile = user_data.get("profile") if isinstance(user_data.get("profile"), Mapping) else {}
     display_name = _extract_user_display_name_from_profile(profile if isinstance(profile, dict) else {})
     if not display_name:
         display_name = str(user_data.get("name") or "").strip() if isinstance(user_data, dict) else ""
