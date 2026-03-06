@@ -15,6 +15,7 @@ from data_slacklake.services.genie_service import ask_genie
 CONVERSATION_TTL_SECONDS = 60 * 60
 _CONVERSATION_STATE: dict[str, dict[str, Any]] = {}
 _CONVERSATION_LOCK = Lock()
+_AUDIT_PREFIX = "[AUDIT_USER:"
 
 
 def _prune_expired_conversations(now_timestamp: float) -> None:
@@ -175,12 +176,24 @@ def _resolve_genie_target(question: str) -> tuple[str | None, str | None, str | 
     return selected_space_id, clean_question, None
 
 
+def _build_tracked_question(question: str, requester_identity: str | None) -> str:
+    normalized_identity = str(requester_identity or "").strip()
+    normalized_question = str(question or "").strip()
+    if not normalized_identity:
+        return normalized_question
+    return f"{_AUDIT_PREFIX}{normalized_identity}] {normalized_question}"
+
+
 def _is_space_not_found_error(error_message: str) -> bool:
     normalized_error = (error_message or "").strip().lower()
     return "unable to get space" in normalized_error or "does not exist" in normalized_error
 
 
-def process_question(question: str, conversation_key: str | None = None) -> tuple[str, str | None]:
+def process_question(
+    question: str,
+    conversation_key: str | None = None,
+    requester_identity: str | None = None,
+) -> tuple[str, str | None]:
     """Roteia toda pergunta para o Databricks Genie."""
     space_id, clean_question, error_message = _resolve_genie_target(question)
     if error_message:
@@ -189,11 +202,12 @@ def process_question(question: str, conversation_key: str | None = None) -> tupl
         return "Não foi possível determinar a Genie para responder a pergunta.", None
 
     genie_conversation_id = _get_genie_conversation_id(conversation_key, space_id)
+    tracked_question = _build_tracked_question(clean_question, requester_identity)
 
     try:
         answer_text, sql_debug, updated_conversation_id = ask_genie(
             space_id=space_id,
-            pergunta=clean_question,
+            pergunta=tracked_question,
             conversation_id=genie_conversation_id,
         )
     except Exception as exc:

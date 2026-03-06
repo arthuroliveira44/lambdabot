@@ -27,6 +27,18 @@ def _build_conversation_key(event_payload: dict[str, Any]) -> str:
     return f"slack:{channel_id}:{thread_ts}:{user_id}"
 
 
+def _build_requester_identity(event_payload: dict[str, Any]) -> str | None:
+    user_id = str(event_payload.get("user") or "").strip()
+    user_name = str(event_payload.get("username") or event_payload.get("user_name") or "").strip()
+    if user_name and user_id:
+        return f"{user_name} ({user_id})"
+    if user_name:
+        return user_name
+    if user_id:
+        return user_id
+    return None
+
+
 def _prune_expired_greetings(now_timestamp: float) -> None:
     expiration_limit = now_timestamp - GREETING_TTL_SECONDS
     expired_keys = [key for key, updated_at in _GREETING_STATE.items() if updated_at < expiration_limit]
@@ -91,7 +103,12 @@ def process_app_mention_event(
             process_question,
         )
 
-        answer_text, sql_debug = process_question(user_question, conversation_key=conversation_key)
+        requester_identity = _build_requester_identity(event_payload)
+        answer_text, sql_debug = process_question(
+            user_question,
+            conversation_key=conversation_key,
+            requester_identity=requester_identity,
+        )
         send_message(answer_text, thread_ts)
         if sql_debug:
             send_message(f"*Debug SQL:* ```{sql_debug}```", thread_ts)

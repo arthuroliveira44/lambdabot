@@ -39,6 +39,26 @@ def test_process_question_uses_default_genie_space(mock_ask_genie):
 
 
 @patch("data_slacklake.services.ai_service.ask_genie")
+def test_process_question_inclui_identificador_do_solicitante(mock_ask_genie):
+    """Deve incluir identificador de auditoria no texto enviado ao Genie."""
+    mock_ask_genie.return_value = ("Resposta Genie", None, "conv-1")
+
+    with patch("data_slacklake.services.ai_service.GENIE_SPACE_ID", "space-default"), patch(
+        "data_slacklake.services.ai_service.GENIE_BOT_SPACE_MAP", ""
+    ):
+        from data_slacklake.services.ai_service import process_question
+
+        resposta, sql = process_question("Qual o total?", requester_identity="Arthur Oliveira (U123)")
+
+    assert resposta == "Resposta Genie"
+    assert sql is None
+    kwargs = mock_ask_genie.call_args.kwargs
+    assert kwargs["space_id"] == "space-default"
+    assert kwargs["conversation_id"] is None
+    assert kwargs["pergunta"] == "[AUDIT_USER:Arthur Oliveira (U123)] Qual o total?"
+
+
+@patch("data_slacklake.services.ai_service.ask_genie")
 def test_process_question_routes_by_alias(mock_ask_genie):
     """Seleciona o space correto quando pergunta começa com !alias."""
     mock_ask_genie.return_value = ("Resposta Remessa", None, "conv-remessa")
@@ -186,7 +206,11 @@ def test_app_mention_success(mock_process):
 
     handle_app_mentions(event_body, mock_say)
 
-    mock_process.assert_called_with("!RemessaGpt analyze os dados", conversation_key="slack:C123:12345.6789:USER_ID")
+    mock_process.assert_called_with(
+        "!RemessaGpt analyze os dados",
+        conversation_key="slack:C123:12345.6789:USER_ID",
+        requester_identity="USER_ID",
+    )
     assert mock_say.call_count >= 2
     assert any(call.args and call.args[0] == "Resposta Final da IA" for call in mock_say.call_args_list)
 
