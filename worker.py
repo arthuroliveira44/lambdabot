@@ -58,8 +58,23 @@ def _get_slack_user_display_name(user_id: str) -> str | None:
     display_name = _extract_user_display_name_from_profile(profile if isinstance(profile, dict) else {})
     if not display_name:
         display_name = str(user_data.get("name") or "").strip() if isinstance(user_data, dict) else ""
+
+    logger.info(
+        "Slack users_info recebido (user_id=%s, profile.display_name_normalized=%s, "
+        "profile.display_name=%s, profile.real_name_normalized=%s, profile.real_name=%s, user.name=%s)",
+        normalized_user_id,
+        str(profile.get("display_name_normalized") or "").strip() if isinstance(profile, dict) else "",
+        str(profile.get("display_name") or "").strip() if isinstance(profile, dict) else "",
+        str(profile.get("real_name_normalized") or "").strip() if isinstance(profile, dict) else "",
+        str(profile.get("real_name") or "").strip() if isinstance(profile, dict) else "",
+        str(user_data.get("name") or "").strip() if isinstance(user_data, dict) else "",
+    )
+
     if not display_name:
+        logger.info("Nome não encontrado via users_info para user_id=%s", normalized_user_id)
         return None
+
+    logger.info("Nome resolvido via users_info para user_id=%s: %s", normalized_user_id, display_name)
     return display_name
 
 
