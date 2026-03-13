@@ -8,6 +8,7 @@ para responder perguntas, com retorno textual (e SQL opcional) sem estourar toke
 from __future__ import annotations
 
 import os
+import time
 from functools import lru_cache
 from typing import Any
 
@@ -20,6 +21,10 @@ from data_slacklake.config import (
     DATABRICKS_TOKEN,
     logger,
 )
+
+GENIE_RETRY_ATTEMPTS = max(1, int(os.getenv("GENIE_RETRY_ATTEMPTS", "3")))
+GENIE_RETRY_BASE_DELAY_SECONDS = max(0.0, float(os.getenv("GENIE_RETRY_BASE_DELAY_SECONDS", "0.5")))
+GENIE_RETRY_MAX_DELAY_SECONDS = max(0.0, float(os.getenv("GENIE_RETRY_MAX_DELAY_SECONDS", "4.0")))
 
 
 def _resolve_databricks_auth_kwargs() -> tuple[dict[str, str], str]:
@@ -61,6 +66,88 @@ def _clear_conflicting_databricks_env(auth_mode: str) -> None:
     for env_var_name in ("DATABRICKS_TOKEN",):
         if os.getenv(env_var_name):
             os.environ.pop(env_var_name, None)
+
+
+def _is_retryable_genie_error(error: Exception) -> bool:
+    normalized_error = str(error).strip().lower()
+    if not normalized_error:
+        return False
+
+    # Erros de configuração não devem sofrer retry.
+    non_retryable_tokens = (
+        "unable to get space",
+        "does not exist",
+        "not found",
+        "permission",
+        "unauthorized",
+        "forbidden",
+        "invalid",
+    )
+    if any(token in normalized_error for token in non_retryable_tokens):
+        return False
+
+    retryable_tokens = (
+        "temporarily unavailable",
+        "timeout",
+        "timed out",
+        "deadline exceeded",
+        "too many requests",
+        "rate limit",
+        "connection reset",
+        "connection aborted",
+        "service unavailable",
+        "internalerror",
+        "429",
+        "500",
+        "502",
+        "503",
+        "504",
+    )
+    return any(token in normalized_error for token in retryable_tokens)
+
+
+def _call_genie_with_retry(
+    call_label: str,
+    invoke_operation: Any,
+    *,
+    space_id: str,
+    has_conversation_id: bool,
+):
+    last_error: Exception | None = None
+    for attempt in range(1, GENIE_RETRY_ATTEMPTS + 1):
+        try:
+            if attempt > 1:
+                logger.info(
+                    "Retry Genie (%s) attempt=%s/%s space_id=%s has_conversation_id=%s",
+                    call_label,
+                    attempt,
+                    GENIE_RETRY_ATTEMPTS,
+                    space_id,
+                    has_conversation_id,
+                )
+            return invoke_operation()
+        except Exception as exc:
+            last_error = exc
+            should_retry = _is_retryable_genie_error(exc)
+            if not should_retry or attempt >= GENIE_RETRY_ATTEMPTS:
+                raise
+
+            delay_seconds = min(
+                GENIE_RETRY_MAX_DELAY_SECONDS,
+                GENIE_RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1)),
+            )
+            logger.warning(
+                "Falha transitória no Genie (%s) attempt=%s/%s. Retry em %.2fs. Erro: %s",
+                call_label,
+                attempt,
+                GENIE_RETRY_ATTEMPTS,
+                delay_seconds,
+                exc,
+            )
+            time.sleep(delay_seconds)
+
+    if last_error is not None:
+        raise last_error
 
 
 @lru_cache(maxsize=4)
@@ -121,15 +208,25 @@ def ask_genie(
 
     normalized_conversation_id = str(conversation_id or "").strip()
     if normalized_conversation_id:
-        message = workspace_client.genie.create_message_and_wait(
+        message = _call_genie_with_retry(
+            "create_message",
+            lambda: workspace_client.genie.create_message_and_wait(
+                space_id=normalized_space_id,
+                conversation_id=normalized_conversation_id,
+                content=normalized_question,
+            ),
             space_id=normalized_space_id,
-            conversation_id=normalized_conversation_id,
-            content=normalized_question,
+            has_conversation_id=True,
         )
     else:
-        message = workspace_client.genie.start_conversation_and_wait(
+        message = _call_genie_with_retry(
+            "start_conversation",
+            lambda: workspace_client.genie.start_conversation_and_wait(
+                space_id=normalized_space_id,
+                content=normalized_question,
+            ),
             space_id=normalized_space_id,
-            content=normalized_question,
+            has_conversation_id=False,
         )
 
     message_error = getattr(message, "error", None)
