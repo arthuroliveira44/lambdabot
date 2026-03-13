@@ -6,6 +6,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def block_real_genie_calls():
+    """Override local para evitar patch global que mocka ask_genie."""
+    yield
+
+
 def test_ask_genie_retry_em_erro_transitorio_e_sucesso_na_tentativa_seguinte():
     """Deve aplicar retry quando o Genie estiver temporariamente indisponível."""
     from data_slacklake.services import genie_service
