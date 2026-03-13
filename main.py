@@ -118,9 +118,12 @@ def _build_event_log_summary(
             "type": body_json.get("type") if body_json else None,
             "event_id": body_json.get("event_id") if body_json else None,
             "event_type": event_payload.get("type"),
+            "event_subtype": event_payload.get("subtype"),
+            "channel_type": event_payload.get("channel_type"),
             "team_id": body_json.get("team_id") if body_json else None,
             "channel": event_payload.get("channel"),
             "user": event_payload.get("user"),
+            "bot_id": event_payload.get("bot_id"),
             "thread_ts": event_payload.get("thread_ts") or event_payload.get("ts"),
         },
     }
@@ -249,24 +252,29 @@ def _is_direct_message_event(event_payload: dict[str, Any]) -> bool:
     return event_payload.get("type") == "message" and event_payload.get("channel_type") == "im"
 
 
-def _is_supported_slack_user_event(body_json: dict[str, Any] | None) -> bool:
+def _is_supported_slack_user_event(body_json: dict[str, Any] | None) -> tuple[bool, str]:
     if not body_json or body_json.get("type") != "event_callback":
-        return False
+        return False, "not_event_callback"
 
     event_payload = body_json.get("event", {})
     if not isinstance(event_payload, dict):
-        return False
+        return False, "missing_event_payload"
 
     event_type = str(event_payload.get("type", "")).strip()
     is_supported_event_type = event_type == "app_mention" or _is_direct_message_event(event_payload)
     if not is_supported_event_type:
-        return False
+        return False, f"unsupported_event_type:{event_type or 'unknown'}"
 
     # Evita loops e eventos não textuais.
-    if event_payload.get("subtype") or event_payload.get("bot_id"):
-        return False
+    subtype = str(event_payload.get("subtype", "")).strip()
+    if subtype:
+        return False, f"ignored_subtype:{subtype}"
+    if event_payload.get("bot_id"):
+        return False, "ignored_bot_event"
 
-    return bool(str(event_payload.get("user", "")).strip())
+    if not bool(str(event_payload.get("user", "")).strip()):
+        return False, "missing_user"
+    return True, "ok"
 
 
 def _invoke_worker_async(body_json: dict[str, Any], request_id: str) -> bool:
@@ -367,8 +375,9 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             response_status = int(url_verification_response.get("statusCode", 200))
             return url_verification_response
 
-        if not _is_supported_slack_user_event(body_json):
-            logger.info("Evento Slack ignorado: tipo não suportado ou mensagem originada por bot.")
+        is_supported_event, ignore_reason = _is_supported_slack_user_event(body_json)
+        if not is_supported_event:
+            logger.info("Evento Slack ignorado (reason=%s).", ignore_reason)
             response_status = 200
             return _ok_response()
 
