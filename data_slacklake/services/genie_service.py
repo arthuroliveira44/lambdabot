@@ -148,6 +148,7 @@ def _call_genie_with_retry(
 
     if last_error is not None:
         raise last_error
+    raise RuntimeError("Falha inesperada no retry do Genie sem erro capturado.")
 
 
 @lru_cache(maxsize=4)
