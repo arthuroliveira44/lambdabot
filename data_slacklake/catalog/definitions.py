@@ -25,6 +25,10 @@ CATALOGO = {
             "- ticket_medio_week (double), mix_share_week (double)\n"
             "- week_streak_max_24w (int), week_growth_consistency_24w (double)\n"
             "- week_kpi_key (string)\n\n"
+            "Observações sobre kpi_metric:\n"
+            "- Valores válidos: 'count_ops', 'gmv', 'gross_revenue', 'unique_customer_day'.\n"
+            "- Mapeamento linguagem natural → kpi_metric: 'vendas'/'receita'/'faturamento' → 'gross_revenue'; "
+            "'operações'/'transações' → 'count_ops'; 'gmv' → 'gmv'; 'clientes únicos por dia' → 'unique_customer_day'.\n\n"
             "Regras (importante):\n"
             "1) Use week_start_date como chave temporal principal da semana.\n"
             "2) Antes de agregar, valide o recorte (kpi_metric + dimensões). Evite somar value_week sem necessidade.\n"
@@ -60,13 +64,5 @@ CATALOGO = {
                 "chave_composta_sugerida": ["week_kpi_key"],
             },
         },
-        "guardrails_sql": [
-            "Use week_start_date para agrupar/ordenar por semana; year_week é label.",
-            "Evite agregar value_week sem confirmar o grão; prefira filtrar dimensões e então agregar apenas se necessário.",
-            "Para WoW use pct_vs_prev_week (ou value_week vs value_prev_week).",
-            "Para comparação com baseline recente use value_4w_avg e pct_vs_4w_avg.",
-            "Para anomalias use zscore_4w/sd_4w e combine com trend_flag/risk_flag.",
-            "Para visão de mês use value_mtd e compare com value_mtd_prev_year.",
-        ],
     },
 }
