@@ -2,34 +2,15 @@
 Data Access Object (DAO) layer responsible for executing queries against Databricks SQL.
 """
 
-import hashlib
-
 from databricks import sql
 
 from data_slacklake.config import (
-    APP_ENV,
     DATABRICKS_HOST,
     DATABRICKS_HTTP_PATH,
     DATABRICKS_TOKEN,
     logger,
 )
-
-_NON_PROD_ENVS = {"dev", "test"}
-
-
-def _is_non_prod() -> bool:
-    return (APP_ENV or "dev").lower() in _NON_PROD_ENVS
-
-
-def _sha256(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
-def _preview_sql(query: str, max_len: int = 140) -> str:
-    compact = " ".join((query or "").split())
-    if len(compact) <= max_len:
-        return compact
-    return compact[:max_len] + "…"
+from data_slacklake.utils import _is_non_prod, _sha256, _preview_sql
 
 
 def execute_query(query):

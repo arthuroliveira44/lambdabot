@@ -1,37 +1,18 @@
 import json
 import base64
-import hashlib
 import logging
-import os
 from slack_bolt import App
 from slack_bolt.adapter.aws_lambda import SlackRequestHandler
 from slack_bolt.request import BoltRequest
 from slack_bolt.response import BoltResponse
-from data_slacklake.config import APP_ENV, SLACK_BOT_TOKEN, SLACK_SIGNING_SECRET
+from data_slacklake.config import SLACK_BOT_TOKEN, SLACK_SIGNING_SECRET
+from data_slacklake.utils import _is_non_prod, _sha256, _preview
 
 logger = logging.getLogger()
 if logger.handlers:
     for handler in logger.handlers:
         logger.removeHandler(handler)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
-
-_NON_PROD_ENVS = {"dev", "test"}
-
-
-def _is_non_prod() -> bool:
-    return (APP_ENV or os.getenv("app_env", "dev")).lower() in _NON_PROD_ENVS
-
-
-def _sha256(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
-def _preview(text: str, max_len: int = 80) -> str:
-    compact = " ".join((text or "").split())
-    if len(compact) <= max_len:
-        return compact
-    return compact[:max_len] + "…"
-
 
 app = App(
     token=SLACK_BOT_TOKEN,
