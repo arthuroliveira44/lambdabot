@@ -42,7 +42,7 @@ def test_process_question_routes_by_alias(mock_ask_genie):
 
     with patch("data_slacklake.services.ai_service.GENIE_SPACE_ID", "space-default"), patch(
         "data_slacklake.services.ai_service.GENIE_BOT_SPACE_MAP",
-        '{"!remessagpt":"space-remessa","!marketing":"space-mkt"}',
+        '{"!remessagpt":"space-remessa","!marketing":"space-mkt","!financeiro":"space-financeiro"}',
     ):
         from data_slacklake.services.ai_service import process_question
 
@@ -58,19 +58,42 @@ def test_process_question_routes_by_alias(mock_ask_genie):
 
 
 @patch("data_slacklake.services.ai_service.ask_genie")
+def test_process_question_routes_by_financeiro_alias(mock_ask_genie):
+    """Seleciona o space correto quando pergunta começa com !financeiro."""
+    mock_ask_genie.return_value = ("Resposta Financeiro", "SELECT sum(valor) FROM transacoes", "conv-financeiro")
+
+    with patch("data_slacklake.services.ai_service.GENIE_SPACE_ID", "space-default"), patch(
+        "data_slacklake.services.ai_service.GENIE_BOT_SPACE_MAP",
+        '{"!remessagpt":"space-remessa","!marketing":"space-mkt","!financeiro":"space-financeiro"}',
+    ):
+        from data_slacklake.services.ai_service import process_question
+
+        resposta, sql = process_question("!financeiro qual foi a receita do trimestre?")
+
+    assert resposta == "Resposta Financeiro"
+    assert sql == "SELECT sum(valor) FROM transacoes"
+    mock_ask_genie.assert_called_once_with(
+        space_id="space-financeiro",
+        pergunta="qual foi a receita do trimestre?",
+        conversation_id=None,
+    )
+
+
+@patch("data_slacklake.services.ai_service.ask_genie")
 def test_process_question_unknown_alias_returns_help(mock_ask_genie):
     """Retorna mensagem orientativa quando alias solicitado não existe."""
     with patch("data_slacklake.services.ai_service.GENIE_SPACE_ID", ""), patch(
         "data_slacklake.services.ai_service.GENIE_BOT_SPACE_MAP",
-        '{"!remessagpt":"space-remessa","!marketing":"space-mkt"}',
+        '{"!remessagpt":"space-remessa","!marketing":"space-mkt","!financeiro":"space-financeiro"}',
     ):
         from data_slacklake.services.ai_service import process_question
 
-        resposta, sql = process_question("!financeiro qual foi a receita?")
+        resposta, sql = process_question("!vendas qual foi a receita?")
 
     assert "Não encontrei a Genie" in resposta
     assert "!remessagpt" in resposta
     assert "!marketing" in resposta
+    assert "!financeiro" in resposta
     assert sql is None
     mock_ask_genie.assert_not_called()
 
@@ -80,7 +103,7 @@ def test_process_question_requires_alias_without_default_space(mock_ask_genie):
     """Exige !alias quando não existe Genie padrão definida."""
     with patch("data_slacklake.services.ai_service.GENIE_SPACE_ID", ""), patch(
         "data_slacklake.services.ai_service.GENIE_BOT_SPACE_MAP",
-        '{"!remessagpt":"space-remessa","!marketing":"space-mkt"}',
+        '{"!remessagpt":"space-remessa","!marketing":"space-mkt","!financeiro":"space-financeiro"}',
     ):
         from data_slacklake.services.ai_service import process_question
 
@@ -88,6 +111,7 @@ def test_process_question_requires_alias_without_default_space(mock_ask_genie):
 
     assert "Informe a Genie" in resposta
     assert "!remessagpt" in resposta
+    assert "!financeiro" in resposta
     assert sql is None
     mock_ask_genie.assert_not_called()
 
@@ -128,7 +152,7 @@ def test_genie_conversation_id_is_isolated_per_space(mock_ask_genie):
 
     with patch("data_slacklake.services.ai_service.GENIE_SPACE_ID", ""), patch(
         "data_slacklake.services.ai_service.GENIE_BOT_SPACE_MAP",
-        '{"!remessagpt":"space-remessa","!marketing":"space-mkt"}',
+        '{"!remessagpt":"space-remessa","!marketing":"space-mkt","!financeiro":"space-financeiro"}',
     ):
         from data_slacklake.services.ai_service import process_question
 
@@ -193,7 +217,7 @@ def test_app_mention_error(mock_process):
     assert "Erro crítico" in last_call_args or "Erro Catastrófico" in last_call_args
 
 
-@patch("data_slacklake.services.ai_service.list_configured_genie_commands", return_value=["!remessagpt", "!marketing"])
+@patch("data_slacklake.services.ai_service.list_configured_genie_commands", return_value=["!financeiro", "!marketing", "!remessagpt"])
 def test_app_mention_without_question_shows_usage(_mock_commands):
     """Mostra instruções e comandos quando menção vem sem pergunta."""
     mock_say = MagicMock()
